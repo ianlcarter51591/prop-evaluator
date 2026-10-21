@@ -53,7 +53,15 @@ def _nba_player(name: str) -> Optional[Tuple[int, str]]:
         return None
     matches.sort(key=lambda m: (not m["is_active"], m["full_name"].lower() != query))
     return int(matches[0]["id"]), str(matches[0]["full_name"])
-
+NBA_HEADERS = {
+    "Host": "stats.nba.com",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Connection": "keep-alive",
+}
 
 def _nba_season_logs(player_id: int, season: str) -> pd.DataFrame:
     """Download one regular-season game log from stats.nba.com via nba_api."""
@@ -63,7 +71,8 @@ def _nba_season_logs(player_id: int, season: str) -> pd.DataFrame:
         player_id=player_id,
         season=season,
         season_type_all_star="Regular Season",
-        timeout=TIMEOUT,
+        headers=NBA_HEADERS,
+        timeout=10,
     ).get_data_frames()[0]
     frame["season_label"] = season
     return frame
