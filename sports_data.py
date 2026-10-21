@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
+import streamlit as st
 
 MLB_BASE: str = "https://statsapi.mlb.com/api/v1"
 TIMEOUT: int = 30
@@ -67,7 +68,7 @@ def _nba_season_logs(player_id: int, season: str) -> pd.DataFrame:
     frame["season_label"] = season
     return frame
 
-
+@st.cache_data(ttl=3600)
 def fetch_nba_player_logs(
     player_name: str, target_season: Optional[int] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
