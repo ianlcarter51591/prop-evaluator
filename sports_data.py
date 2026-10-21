@@ -44,9 +44,9 @@ def nba_season_str(start: int) -> str:
 def fetch_nba_player_logs(
     player_name: str, target_season: Optional[int] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch recent NBA player game logs via ESPN's public API."""
+    """Fetch current-season NBA player game logs strictly, regardless of sample size."""
     try:
-        # Search for player on ESPN
+        # 1. Search for player ID on ESPN
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
             f"?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=basketball&league=nba"
@@ -59,28 +59,26 @@ def fetch_nba_player_logs(
 
         player_id = items[0].get("id")
 
-        # Fetch athlete gamelog
+        # 2. Fetch athlete gamelog summary for current season
         gamelog_url = (
             "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/"
             f"athletes/{player_id}/gamelog"
         )
         g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
 
-        # Parse season log entries
         rows = []
         season_types = g_res.get("seasonTypes", [])
-        
+
+        # Parse season categories (Regular Season & Postseason)
         for stype in season_types:
             for category in stype.get("categories", []):
                 labels = category.get("labels", [])
                 events = category.get("events", [])
-                
                 for event in events:
                     stats = event.get("stats", [])
                     if stats and labels and len(stats) == len(labels):
                         row = dict(zip(labels, stats))
-                        
-                        # Helper for safe float conversion
+
                         def safe_float(val):
                             try:
                                 return float(val) if str(val).strip() != "-" else 0.0
@@ -90,21 +88,18 @@ def fetch_nba_player_logs(
                         row["PTS"] = safe_float(row.get("PTS", 0))
                         row["REB"] = safe_float(row.get("REB", 0))
                         row["AST"] = safe_float(row.get("AST", 0))
-                        
-                        # Handle 3PM parsing from 3PT (e.g. "3-7")
                         fg3_str = str(row.get("3PT", "0-0"))
                         row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
-                        
                         rows.append(row)
 
-        # Fallback check if top-level events exist
+        # 3. Direct events parsing fallback for current season
         if not rows and "events" in g_res:
             labels = g_res.get("labels", [])
             for event_id, event_data in g_res.get("events", {}).items():
                 stats = event_data.get("stats", [])
-                if stats and len(stats) == len(labels):
+                if stats and labels and len(stats) == len(labels):
                     row = dict(zip(labels, stats))
-                    
+
                     def safe_float(val):
                         try:
                             return float(val) if str(val).strip() != "-" else 0.0
@@ -115,18 +110,17 @@ def fetch_nba_player_logs(
                     row["REB"] = safe_float(row.get("REB", 0))
                     row["AST"] = safe_float(row.get("AST", 0))
                     fg3_str = str(row.get("3PT", "0-0"))
-                    row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else 0.0
+                    row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
                     rows.append(row)
 
         if not rows:
-            return pd.DataFrame(), f"No recent game log stats available for {player_name}."
+            return pd.DataFrame(), f"No current-season games found for {player_name}."
 
         df = pd.DataFrame(rows)
         return df, None
 
     except Exception as e:
         return pd.DataFrame(), f"ESPN NBA fetch failed: {e}"
-
 # ---------------------------------------------------------------------------
 # MLB Game Logs (MLB StatsAPI)
 # ---------------------------------------------------------------------------
