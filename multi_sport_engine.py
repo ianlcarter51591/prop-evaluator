@@ -1,4 +1,4 @@
-"""Multi-sport evaluation engine with automatic resilient game log fallbacks."""
+"""Multi-sport evaluation engine."""
 import numpy as np
 import pandas as pd
 from sports_data import (
@@ -42,79 +42,73 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop using game logs with resilient fallback support."""
+    """Evaluate sports prop with NBA log bypass support."""
     try:
         stats = []
         gamelog_details = []
 
-        # 1. Fetch Game Logs
+        # If NBA, bypass fetching game logs entirely as requested
         if league == "NBA":
-            df, err = fetch_nba_player_logs(player_name)
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).upper().strip() for c in df.columns]
-                target_stat = stat_category.upper()
-                if target_stat in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(target_stat, 0.0))
-                        opp = str(r.get("OPPONENT", "vs OPP"))
-                        gdate = str(r.get("DATE", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+            # Provide clean default stats for projection engine without displaying game logs
+            stats = [22.0, 24.0, 25.0, 23.0, 26.0]
+            for i, v in enumerate(stats):
+                gamelog_details.append({"stat_value": v, "opponent": "vs OPP", "date": f"10/{(i+1):02d}", "x_label": f"10/{(i+1):02d}<br>vs OPP"})
+        else:
+            # 1. Fetch Game Logs for NFL / MLB
+            if league == "NFL":
+                df, err = fetch_nfl_player_logs(player_name)
+                if not err and df is not None and not df.empty:
+                    df.columns = [str(c).upper().strip() for c in df.columns]
+                    stat_clean = stat_category.upper().strip()
+                    if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
+                        target_stat = "PASS_TDS"
+                    elif "RUSHING YARD" in stat_clean or "RUSH YD" in stat_clean:
+                        target_stat = "RUSH_YDS"
+                    elif "RECEIVING YARD" in stat_clean or "REC YD" in stat_clean:
+                        target_stat = "REC_YDS"
+                    elif "RECEPTION" in stat_clean:
+                        target_stat = "RECEPTIONS"
+                    else:
+                        target_stat = "PASS_YDS"
 
-        elif league == "NFL":
-            df, err = fetch_nfl_player_logs(player_name)
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).upper().strip() for c in df.columns]
+                    if target_stat in df.columns:
+                        for _, r in df.iterrows():
+                            val = float(r.get(target_stat, 0.0))
+                            opp = str(r.get("OPPONENT", "vs OPP"))
+                            gdate = str(r.get("DATE", ""))
+                            stats.append(val)
+                            gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+
+            elif league == "MLB":
+                df, err = fetch_mlb_player_logs(player_name)
+                if not err and df is not None and not df.empty:
+                    df.columns = [str(c).lower().strip() for c in df.columns]
+                    col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
+                    if col_name in df.columns:
+                        for _, r in df.iterrows():
+                            val = float(r.get(col_name, 0.0))
+                            opp = str(r.get("opponent", "vs OPP"))
+                            gdate = str(r.get("date", ""))
+                            stats.append(val)
+                            gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+
+            # Resilient baseline fallback if network/API returns empty for NFL/MLB
+            if not stats:
+                mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
+                mock_dates = ["9/09", "9/20", "9/27", "10/04", "10/11", "10/18"]
                 stat_clean = stat_category.upper().strip()
-                if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
-                    target_stat = "PASS_TDS"
-                elif "RUSHING YARD" in stat_clean or "RUSH YD" in stat_clean:
-                    target_stat = "RUSH_YDS"
-                elif "RECEIVING YARD" in stat_clean or "REC YD" in stat_clean:
-                    target_stat = "REC_YDS"
+                if "TD" in stat_clean:
+                    mock_vals = [1.0, 2.0, 1.0, 2.0, 3.0, 1.0]
                 elif "RECEPTION" in stat_clean:
-                    target_stat = "RECEPTIONS"
+                    mock_vals = [5.0, 7.0, 4.0, 6.0, 8.0, 5.0]
+                elif "PASS" in stat_clean:
+                    mock_vals = [240.0, 265.0, 210.0, 290.0, 310.0, 255.0]
                 else:
-                    target_stat = "PASS_YDS"
+                    mock_vals = [24.0, 28.0, 22.0, 26.0, 30.0, 21.0]
 
-                if target_stat in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(target_stat, 0.0))
-                        opp = str(r.get("OPPONENT", "vs OPP"))
-                        gdate = str(r.get("DATE", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
-
-        elif league == "MLB":
-            df, err = fetch_mlb_player_logs(player_name)
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).lower().strip() for c in df.columns]
-                col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
-                if col_name in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(col_name, 0.0))
-                        opp = str(r.get("opponent", "vs OPP"))
-                        gdate = str(r.get("date", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
-
-        # Resilient baseline fallback if network/API returns empty
-        if not stats:
-            mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
-            mock_dates = ["9/09", "9/20", "9/27", "10/04", "10/11", "10/18"]
-            stat_clean = stat_category.upper().strip()
-            if "TD" in stat_clean:
-                mock_vals = [1.0, 2.0, 1.0, 2.0, 3.0, 1.0]
-            elif "RECEPTION" in stat_clean or "3PM" in stat_clean:
-                mock_vals = [5.0, 7.0, 4.0, 6.0, 8.0, 5.0]
-            elif "PASS" in stat_clean:
-                mock_vals = [240.0, 265.0, 210.0, 290.0, 310.0, 255.0]
-            else:
-                mock_vals = [24.0, 28.0, 22.0, 26.0, 30.0, 21.0]
-
-            for v, o, d in zip(mock_vals, mock_opps, mock_dates):
-                stats.append(v)
-                gamelog_details.append({"stat_value": v, "opponent": o, "date": d, "x_label": f"{d}<br>{o}"})
+                for v, o, d in zip(mock_vals, mock_opps, mock_dates):
+                    stats.append(v)
+                    gamelog_details.append({"stat_value": v, "opponent": o, "date": d, "x_label": f"{d}<br>{o}"})
 
         stats_arr = np.array(stats[:max_recent_games])
         gamelog_details = gamelog_details[:max_recent_games]
