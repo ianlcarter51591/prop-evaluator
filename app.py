@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Live Game Log Dashboard."""
+"""Vision UI Sports Prop Evaluator."""
 import streamlit as st
 import numpy as np
 import pandas as pd
