@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Live Odds and Synced Game Log Chart."""
+"""Vision UI Sports Prop Evaluator with Clean Plotly Bar Chart Annotations."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -105,6 +105,17 @@ st.markdown(
     label, p, span {
         color: #334155 !important;
     }
+
+    /* Hit Rate Summary Banner */
+    .summary-banner {
+        background: #f1f5f9;
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #0f172a;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -112,11 +123,11 @@ st.markdown(
 
 # 3. Session State Initialization
 if "line" not in st.session_state:
-    st.session_state["line"] = 1.50
+    st.session_state["line"] = 25.50
 if "over_odds" not in st.session_state:
-    st.session_state["over_odds"] = -128
+    st.session_state["over_odds"] = -113
 if "under_odds" not in st.session_state:
-    st.session_state["under_odds"] = +100
+    st.session_state["under_odds"] = -113
 
 # 4. App Header
 st.markdown(
@@ -135,9 +146,9 @@ with st.container():
     with c1:
         sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
     with c2:
-        player_name = st.text_input("Player", value="Drake Maye" if sport == "NFL" else "Jayson Tatum")
+        player_name = st.text_input("Player", value="Jayson Tatum" if sport == "NBA" else "Drake Maye")
     with c3:
-        season = st.text_input("Season", value="2026" if sport == "NFL" else "2025-26")
+        season = st.text_input("Season", value="2025-26" if sport == "NBA" else "2026")
 
     c4, c5, c6 = st.columns([1, 1, 1])
     with c4:
@@ -251,9 +262,13 @@ else:
         hit_pct_l5 = (l5_hits / len(l5_df)) * 100 if len(l5_df) > 0 else 0
 
         st.markdown(
-            f"**Current Season Hit Rate:** `{hit_pct_season:.0f}%` ({len(over_hits)} of {len(df_chart)}) | "
-            f"**L5 Hit Rate:** `{hit_pct_l5:.0f}%` ({l5_hits} of {len(l5_df)}) | "
-            f"**Average:** `{df_chart['stat_value'].mean():.2f}` | **Median:** `{df_chart['stat_value'].median():.2f}`"
+            f'<div class="summary-banner">'
+            f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
+            f'L5 Hit Rate: <span style="color:#16a34a;">{hit_pct_l5:.0f}%</span> ({l5_hits} of {len(l5_df)}) &nbsp;|&nbsp; '
+            f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
+            f'Median: {df_chart["stat_value"].median():.2f}'
+            f'</div>',
+            unsafe_allow_html=True,
         )
 
         colors = ["#16a34a" if val > line_val else "#dc2626" for val in df_chart["stat_value"]]
@@ -272,6 +287,7 @@ else:
             )
         )
 
+        # Dashed Prop Line
         fig.add_shape(
             type="line",
             x0=-0.5,
@@ -281,20 +297,25 @@ else:
             line=dict(color="#2563eb", width=2, dash="dash"),
         )
 
+        # Line Label Annotation
         fig.add_annotation(
-            x=len(df_chart) - 1,
+            x=len(df_chart) - 0.6,
             y=line_val,
             text=f"Line: {line_val}",
             showarrow=False,
-            yshift=10,
-            font=dict(color="#2563eb", size=12, family="sans-serif"),
+            yshift=12,
+            font=dict(color="#2563eb", size=13, family="sans-serif", weight="bold"),
+            bgcolor="#ffffff",
+            bordercolor="#2563eb",
+            borderwidth=1,
+            borderpad=4
         )
 
         fig.update_layout(
             plot_bgcolor="#ffffff",
             paper_bgcolor="#ffffff",
             margin=dict(l=20, r=20, t=30, b=50),
-            height=350,
+            height=360,
             xaxis=dict(showgrid=False, title="Date & Opponent"),
             yaxis=dict(showgrid=True, gridcolor="#f1f5f9", title=f"{stat_category}"),
         )
