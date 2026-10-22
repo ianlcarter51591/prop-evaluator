@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Live Odds, Game Log Bar Chart, and Field Heat Map."""
+"""Vision UI Sports Prop Evaluator with Live Odds and Synced Game Log Chart."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# 2. White / Light Theme Vision UI CSS Injection
+# 2. Light Vision UI Styling Injection
 st.markdown(
     """
     <style>
@@ -105,27 +105,6 @@ st.markdown(
     label, p, span {
         color: #334155 !important;
     }
-
-    /* Spray Chart Container */
-    .spray-container {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 20px;
-        margin-top: 20px;
-    }
-
-    .zone-cell {
-        border-radius: 8px;
-        padding: 12px 8px;
-        text-align: center;
-        font-weight: 800;
-        color: #ffffff;
-        font-size: 14px;
-    }
-    .zone-hot { background-color: #16a34a; }
-    .zone-neutral { background-color: #eab308; }
-    .zone-cold { background-color: #dc2626; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -133,11 +112,11 @@ st.markdown(
 
 # 3. Session State Initialization
 if "line" not in st.session_state:
-    st.session_state["line"] = 249.50
+    st.session_state["line"] = 1.50
 if "over_odds" not in st.session_state:
-    st.session_state["over_odds"] = -114
+    st.session_state["over_odds"] = -128
 if "under_odds" not in st.session_state:
-    st.session_state["under_odds"] = -112
+    st.session_state["under_odds"] = +100
 
 # 4. App Header
 st.markdown(
@@ -265,21 +244,18 @@ else:
     if gamelog_data:
         df_chart = pd.DataFrame(gamelog_data)
         
-        # Calculate Hit Rates
         over_hits = df_chart[df_chart["stat_value"] > line_val]
         hit_pct_season = (len(over_hits) / len(df_chart)) * 100
         l5_df = df_chart.tail(5)
         l5_hits = len(l5_df[l5_df["stat_value"] > line_val])
         hit_pct_l5 = (l5_hits / len(l5_df)) * 100 if len(l5_df) > 0 else 0
 
-        # Stat Summary Bar
         st.markdown(
             f"**Current Season Hit Rate:** `{hit_pct_season:.0f}%` ({len(over_hits)} of {len(df_chart)}) | "
             f"**L5 Hit Rate:** `{hit_pct_l5:.0f}%` ({l5_hits} of {len(l5_df)}) | "
-            f"**Average:** `{df_chart['stat_value'].mean():.1f}` | **Median:** `{df_chart['stat_value'].median():.1f}`"
+            f"**Average:** `{df_chart['stat_value'].mean():.2f}` | **Median:** `{df_chart['stat_value'].median():.2f}`"
         )
 
-        # Bar Colors based on Over/Under Line
         colors = ["#16a34a" if val > line_val else "#dc2626" for val in df_chart["stat_value"]]
 
         fig = go.Figure()
@@ -288,7 +264,7 @@ else:
             go.Bar(
                 x=df_chart["x_label"],
                 y=df_chart["stat_value"],
-                text=df_chart["stat_value"].astype(int),
+                text=[f"{v:.1f}" if v % 1 != 0 else f"{int(v)}" for v in df_chart["stat_value"]],
                 textposition="outside",
                 marker_color=colors,
                 hovertext=df_chart["opponent"],
@@ -296,7 +272,6 @@ else:
             )
         )
 
-        # Dashed Prop Line
         fig.add_shape(
             type="line",
             x0=-0.5,
@@ -325,74 +300,3 @@ else:
         )
 
         st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-
-    # 8. SPRAY CHART / FIELD HEAT MAP
-    if sport in ["NFL", "NBA"]:
-        st.markdown("### 🎯 Offensive Spray Chart & Heat Map")
-        st.caption(f"Target distribution & completion efficiency zones for {player_name}")
-
-        spray_zones = res.get("spray_zones", {})
-
-        sc1, sc2 = st.columns([3, 2])
-
-        with sc1:
-            st.markdown("#### **Field Target Zones**")
-            # 3x4 Field Grid
-            z1, z2, z3 = st.columns(3)
-            with z1:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Deep Left", {}).get("color", "zone-hot")}">'
-                            f'Deep Left (20+ yds)<br>{spray_zones.get("Deep Left", {}).get("pct", "8%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z2:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Deep Middle", {}).get("color", "zone-neutral")}">'
-                            f'Deep Middle (20+ yds)<br>{spray_zones.get("Deep Middle", {}).get("pct", "5%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z3:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Deep Right", {}).get("color", "zone-hot")}">'
-                            f'Deep Right (20+ yds)<br>{spray_zones.get("Deep Right", {}).get("pct", "10%")}'
-                            f'</div>', unsafe_allow_html=True)
-
-            st.write("")
-            z4, z5, z6 = st.columns(3)
-            with z4:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Int Left", {}).get("color", "zone-hot")}">'
-                            f'Intermediate Left (10-20)<br>{spray_zones.get("Int Left", {}).get("pct", "16%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z5:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Int Middle", {}).get("color", "zone-cold")}">'
-                            f'Intermediate Middle<br>{spray_zones.get("Int Middle", {}).get("pct", "9%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z6:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Int Right", {}).get("color", "zone-hot")}">'
-                            f'Intermediate Right<br>{spray_zones.get("Int Right", {}).get("pct", "20%")}'
-                            f'</div>', unsafe_allow_html=True)
-
-            st.write("")
-            z7, z8, z9 = st.columns(3)
-            with z7:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Short Left", {}).get("color", "zone-cold")}">'
-                            f'Short Left (0-10 yds)<br>{spray_zones.get("Short Left", {}).get("pct", "11%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z8:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Short Middle", {}).get("color", "zone-neutral")}">'
-                            f'Short Middle (0-10 yds)<br>{spray_zones.get("Short Middle", {}).get("pct", "6%")}'
-                            f'</div>', unsafe_allow_html=True)
-            with z9:
-                st.markdown(f'<div class="zone-cell {spray_zones.get("Short Right", {}).get("color", "zone-cold")}">'
-                            f'Short Right (0-10 yds)<br>{spray_zones.get("Short Right", {}).get("pct", "15%")}'
-                            f'</div>', unsafe_allow_html=True)
-
-        with sc2:
-            st.markdown("#### **Route & Target Efficiency**")
-            routes = res.get("route_mix", [
-                {"route": "Flat / Out", "comp_rate": "88%", "attempts": "7/8", "defense_allowed": "73%"},
-                {"route": "Curl / Hitch", "comp_rate": "67%", "attempts": "4/6", "defense_allowed": "75%"},
-                {"route": "Slant / Dig", "comp_rate": "83%", "attempts": "5/6", "defense_allowed": "80%"},
-                {"route": "Go / Seam", "comp_rate": "55%", "attempts": "6/11", "defense_allowed": "62%"},
-            ])
-
-            for r in routes:
-                st.markdown(f"**{r['route']}**: {r['comp_rate']} completion ({r['attempts']} att) | Opp Allowed: {r['defense_allowed']}")
-                st.progress(int(r['comp_rate'].replace("%", "")))
