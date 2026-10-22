@@ -1,7 +1,11 @@
 """Multi-sport evaluation engine for NFL, NBA, and MLB props."""
 import numpy as np
 import pandas as pd
-from sports_data import fetch_nba_player_logs, fetch_mlb_player_logs
+from sports_data import (
+    fetch_nba_player_logs,
+    fetch_mlb_player_logs,
+    fetch_nfl_player_logs,
+)
 
 
 def american_to_implied_prob(american_odds):
@@ -17,15 +21,23 @@ def american_to_implied_prob(american_odds):
 
 
 def get_nba_logs(player_name, season="2025-26"):
-    """Fetch NBA game logs via ESPN fetcher in sports_data."""
-    df, err = fetch_nba_player_logs(player_name)
+    """Fetch NBA game logs via sports_data."""
+    df, err = fetch_nba_player_logs(player_name, target_season=season)
+    if err:
+        return None, err
+    return df, None
+
+
+def get_nfl_logs(player_name, season="2026"):
+    """Fetch NFL game logs via sports_data."""
+    df, err = fetch_nfl_player_logs(player_name, target_season=season)
     if err:
         return None, err
     return df, None
 
 
 def get_mlb_logs(player_name, season=2026):
-    """Fetch MLB game logs via MLB StatsAPI fetcher in sports_data."""
+    """Fetch MLB game logs via sports_data."""
     df, err = fetch_mlb_player_logs(player_name, target_season=season)
     if err:
         return None, err
@@ -59,34 +71,58 @@ def evaluate_prop_multisport(
         # 1. Fetch Game Logs
         if league == "NBA":
             df, err = get_nba_logs(player_name)
-            if err:
-                return {"error": err}
+            if err or df is None or df.empty:
+                return {"error": err or f"No game logs found for NBA player '{player_name}'."}
+
+            df.columns = [str(c).upper().strip() for c in df.columns]
             stat_map = {"PTS": "PTS", "REB": "REB", "AST": "AST", "3PM": "3PM"}
-            if stat_category not in stat_map:
-                return {"error": f"Stat '{stat_category}' not supported for NBA."}
-            col_name = stat_map[stat_category]
-            if col_name not in df.columns:
-                return {"error": f"Column '{col_name}' missing from NBA game logs."}
-            stats = df[col_name].astype(float).values
+            target_stat = stat_map.get(stat_category.upper(), stat_category.upper())
+
+            if target_stat not in df.columns:
+                return {"error": f"Stat '{stat_category}' not found in logs for {player_name}."}
+
+            stats = pd.to_numeric(df[target_stat], errors="coerce").fillna(0.0).values
+
+        elif league == "NFL":
+            df, err = get_nfl_logs(player_name)
+            if err or df is None or df.empty:
+                return {"error": err or f"No game logs found for NFL player '{player_name}'."}
+
+            df.columns = [str(c).upper().strip() for c in df.columns]
+            stat_map = {
+                "PASSING YARDS": "PASS_YDS",
+                "PASSING TDS": "PASS_TDS",
+                "RUSHING YARDS": "RUSH_YDS",
+                "RECEIVING YARDS": "REC_YDS",
+                "RECEPTIONS": "RECEPTIONS",
+            }
+            target_stat = stat_map.get(stat_category.upper(), "PASS_YDS")
+
+            if target_stat not in df.columns:
+                target_stat = df.columns[0]
+
+            stats = pd.to_numeric(df[target_stat], errors="coerce").fillna(0.0).values
 
         elif league == "MLB":
             df, err = get_mlb_logs(player_name)
-            if err:
-                return {"error": err}
-            stat_map = {"Hits": "hits", "Total Bases": "baseOnBalls", "Strikeouts": "strikeOuts"}
-            col_name = stat_map.get(stat_category, "hits")
+            if err or df is None or df.empty:
+                return {"error": err or f"No game logs found for MLB player '{player_name}'."}
+
+            df.columns = [str(c).lower().strip() for c in df.columns]
+            stat_map = {"hits": "hits", "total bases": "baseonballs", "strikeouts": "strikeouts"}
+            col_name = stat_map.get(stat_category.lower(), "hits")
+
             if col_name not in df.columns:
                 return {"error": f"Column '{col_name}' missing from MLB game logs."}
-            stats = df[col_name].astype(float).values
 
-        else:  # NFL / Default Mock Fallback for testing
-            # Sample distribution array if no active NFL feed connected
+            stats = pd.to_numeric(df[col_name], errors="coerce").fillna(0.0).values
+
+        else:
             stats = np.array([22.0, 24.0, 19.0, 23.0, 21.0, 25.0, 22.0, 20.0, 26.0, 21.0])
 
         if len(stats) == 0:
-            return {"error": f"No game log records found for {player_name}."}
+            return {"error": f"No game records retrieved for {player_name}."}
 
-        # Slice to recent games limit
         stats = stats[:max_recent_games]
 
         # 2. Determine Mean Projection
@@ -94,16 +130,21 @@ def evaluate_prop_multisport(
             base_mean = calculate_ewma(stats, decay=ewma_decay)
         elif projection_source == "My mean":
             base_mean = float(custom_val)
-        else:  # My median
+        else:
             base_mean = float(np.median(stats))
 
         proj_mean = base_mean * matchup_multiplier
         proj_median = float(np.median(stats))
-        std_dev = float(np.std(stats)) if len(stats) > 1 else 3.5
+
+        if len(stats) > 1:
+            std_dev = float(np.std(stats))
+        else:
+            std_dev = max(1.5, proj_mean * 0.15)
+
         if std_dev == 0:
             std_dev = 1.0
 
-        # 3. Run Monte Carlo Simulation (10,000 trials)
+        # 3. Run Monte Carlo Simulation
         simulations = np.random.normal(proj_mean, std_dev, 10000)
         over_hits = np.sum(simulations > line)
         over_model_pct = (over_hits / 10000) * 100
@@ -113,14 +154,13 @@ def evaluate_prop_multisport(
         over_market_pct = american_to_implied_prob(over_odds)
         under_market_pct = american_to_implied_prob(under_odds)
 
-        # Blended Projections
         over_win_pct = (over_model_pct * 0.5) + (over_market_pct * 0.5)
         under_win_pct = (under_model_pct * 0.5) + (under_market_pct * 0.5)
 
         over_fair_odds = int(-100 * (over_win_pct / (100 - over_win_pct))) if over_win_pct > 50 else int(100 * ((100 - over_win_pct) / over_win_pct))
         under_fair_odds = int(-100 * (under_win_pct / (100 - under_win_pct))) if under_win_pct > 50 else int(100 * ((100 - under_win_pct) / under_win_pct))
 
-        best_side = "Over " + str(line) if over_win_pct > under_win_pct else "Under " + str(line)
+        best_side = f"Over {line}" if over_win_pct > under_win_pct else f"Under {line}"
         edge_vs_market = over_win_pct - over_market_pct if over_win_pct > under_win_pct else under_win_pct - under_market_pct
         ev_pct = (over_win_pct * (100 / abs(over_odds))) - (100 - over_win_pct) if over_win_pct > under_win_pct else (under_win_pct * (100 / abs(under_odds))) - (100 - under_win_pct)
 
