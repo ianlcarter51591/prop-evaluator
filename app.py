@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator."""
+"""Vision UI Sports Prop Evaluator with Conditional NBA Game Log Removal."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -122,7 +122,7 @@ st.markdown(
 
 # 3. Session State Initialization
 if "line" not in st.session_state:
-    st.session_state["line"] = 249.50
+    st.session_state["line"] = 24.50
 if "over_odds" not in st.session_state:
     st.session_state["over_odds"] = -114
 if "under_odds" not in st.session_state:
@@ -145,9 +145,9 @@ with st.container():
     with c1:
         sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
     with c2:
-        player_name = st.text_input("Player", value="Drake Maye" if sport == "NFL" else "Jayson Tatum")
+        player_name = st.text_input("Player", value="Tyrese Maxey" if sport == "NBA" else "Drake Maye")
     with c3:
-        season = st.text_input("Season", value="2026" if sport == "NFL" else "2026-27")
+        season = st.text_input("Season", value="2026-27" if sport == "NBA" else "2026")
 
     c4, c5, c6 = st.columns([1, 1, 1])
     with c4:
@@ -247,71 +247,74 @@ else:
 
     st.markdown("---")
 
-    # 7. GAME LOG BAR CHART (Plotly)
-    st.markdown("### 📊 Game Log Performance")
-    
-    gamelog_data = res.get("gamelog_details", [])
-    if gamelog_data:
-        df_chart = pd.DataFrame(gamelog_data)
-        
-        over_hits = df_chart[df_chart["stat_value"] > line_val]
-        hit_pct_season = (len(over_hits) / len(df_chart)) * 100
+    # 7. CONDITIONAL GAME LOG BAR CHART (Hidden for NBA as requested)
+    if sport == "NBA":
+        st.markdown("### 📊 Game Log Performance")
+        st.info("Game log performance charts are currently disabled for the NBA section.")
+    else:
+        st.markdown("### 📊 Game Log Performance")
+        gamelog_data = res.get("gamelog_details", [])
+        if gamelog_data:
+            df_chart = pd.DataFrame(gamelog_data)
+            
+            over_hits = df_chart[df_chart["stat_value"] > line_val]
+            hit_pct_season = (len(over_hits) / len(df_chart)) * 100
 
-        st.markdown(
-            f'<div class="summary-banner">'
-            f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
-            f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
-            f'Median: {df_chart["stat_value"].median():.2f}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        colors = ["#16a34a" if val > line_val else "#dc2626" for val in df_chart["stat_value"]]
-
-        fig = go.Figure()
-        
-        fig.add_trace(
-            go.Bar(
-                x=df_chart["x_label"],
-                y=df_chart["stat_value"],
-                text=[f"{v:.1f}" if v % 1 != 0 else f"{int(v)}" for v in df_chart["stat_value"]],
-                textposition="outside",
-                marker_color=colors,
-                hovertext=df_chart["opponent"],
-                hoverinfo="text+y",
+            st.markdown(
+                f'<div class="summary-banner">'
+                f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
+                f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
+                f'Median: {df_chart["stat_value"].median():.2f}'
+                f'</div>',
+                unsafe_allow_html=True,
             )
-        )
 
-        # Dashed Prop Line
-        fig.add_shape(
-            type="line",
-            x0=-0.5,
-            x1=len(df_chart) - 0.5,
-            y0=line_val,
-            y1=line_val,
-            line=dict(color="#2563eb", width=2, dash="dash"),
-        )
+            colors = ["#16a34a" if val > line_val else "#dc2626" for val in df_chart["stat_value"]]
 
-        fig.add_annotation(
-            x=len(df_chart) - 0.6 if len(df_chart) > 1 else 0,
-            y=line_val,
-            text=f"Line: {line_val}",
-            showarrow=False,
-            yshift=12,
-            font=dict(color="#2563eb", size=13, family="sans-serif", weight="bold"),
-            bgcolor="#ffffff",
-            bordercolor="#2563eb",
-            borderwidth=1,
-            borderpad=4
-        )
+            fig = go.Figure()
+            
+            fig.add_trace(
+                go.Bar(
+                    x=df_chart["x_label"],
+                    y=df_chart["stat_value"],
+                    text=[f"{v:.1f}" if v % 1 != 0 else f"{int(v)}" for v in df_chart["stat_value"]],
+                    textposition="outside",
+                    marker_color=colors,
+                    hovertext=df_chart["opponent"],
+                    hoverinfo="text+y",
+                )
+            )
 
-        fig.update_layout(
-            plot_bgcolor="#ffffff",
-            paper_bgcolor="#ffffff",
-            margin=dict(l=20, r=20, t=30, b=50),
-            height=360,
-            xaxis=dict(showgrid=False, title="Date & Opponent"),
-            yaxis=dict(showgrid=True, gridcolor="#f1f5f9", title=f"{stat_category}"),
-        )
+            # Dashed Prop Line
+            fig.add_shape(
+                type="line",
+                x0=-0.5,
+                x1=len(df_chart) - 0.5,
+                y0=line_val,
+                y1=line_val,
+                line=dict(color="#2563eb", width=2, dash="dash"),
+            )
 
-        st.plotly_chart(fig, use_container_width=True)
+            fig.add_annotation(
+                x=len(df_chart) - 0.6 if len(df_chart) > 1 else 0,
+                y=line_val,
+                text=f"Line: {line_val}",
+                showarrow=False,
+                yshift=12,
+                font=dict(color="#2563eb", size=13, family="sans-serif", weight="bold"),
+                bgcolor="#ffffff",
+                bordercolor="#2563eb",
+                borderwidth=1,
+                borderpad=4
+            )
+
+            fig.update_layout(
+                plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                margin=dict(l=20, r=20, t=30, b=50),
+                height=360,
+                xaxis=dict(showgrid=False, title="Date & Opponent"),
+                yaxis=dict(showgrid=True, gridcolor="#f1f5f9", title=f"{stat_category}"),
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
