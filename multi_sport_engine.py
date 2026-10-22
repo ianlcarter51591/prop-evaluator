@@ -1,4 +1,4 @@
-"""Multi-sport evaluation engine synced to 2026-27 season logs."""
+"""Multi-sport evaluation engine operating strictly on current season logs."""
 import numpy as np
 import pandas as pd
 from sports_data import (
@@ -42,12 +42,12 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop and generate 2026-27 game log details."""
+    """Evaluate sports prop strictly using current season game logs."""
     try:
         stats = []
         gamelog_details = []
 
-        # 1. Fetch 2026-27 Logs
+        # 1. Fetch Current Season Logs
         if league == "NBA":
             df, err = fetch_nba_player_logs(player_name, target_season="2026-27")
             if not err and df is not None and not df.empty:
@@ -98,29 +98,13 @@ def evaluate_prop_multisport(
                         stats.append(val)
                         gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
-        # 2. Early-Season Sample Fallback (1 game played like 10/20 @ DET)
         if not stats:
-            if league == "NBA":
-                mock_opps = ["@ DET"]
-                mock_dates = ["10/20"]
-                mock_vals = [13.0]
-            elif league == "MLB":
-                mock_opps = ["vs NYY"]
-                mock_dates = ["10/18"]
-                mock_vals = [1.0]
-            else:
-                mock_opps = ["@ SEA"]
-                mock_dates = ["10/18"]
-                mock_vals = [235.0] if "PASS" in stat_category.upper() else [1.0]
+            return {"error": f"No current 2026-27 season game logs found for '{player_name}'."}
 
-            for v, o, d in zip(mock_vals, mock_opps, mock_dates):
-                stats.append(v)
-                gamelog_details.append({"stat_value": v, "opponent": o, "date": d, "x_label": f"{d}<br>{o}"})
+        # Do NOT pad or backfill with prior season games; use exact current season sample
+        stats_arr = np.array(stats)
 
-        stats_arr = np.array(stats[:max_recent_games])
-        gamelog_details = gamelog_details[:max_recent_games]
-
-        # 3. Projections
+        # 2. Dynamic Calculations on Current Season Only
         if projection_source == "Model (EWMA mean)":
             base_mean = calculate_ewma(stats_arr, decay=ewma_decay)
         elif projection_source == "My mean":
@@ -135,7 +119,7 @@ def evaluate_prop_multisport(
         if std_dev == 0:
             std_dev = 0.5
 
-        # 4. Monte Carlo Simulation
+        # 3. Monte Carlo Simulation
         simulations = np.random.normal(proj_mean, std_dev, 10000)
         over_hits = np.sum(simulations > line)
         over_model_pct = (over_hits / 10000) * 100
