@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Clean Plotly Bar Chart Annotations."""
+"""Vision UI Sports Prop Evaluator with 2026-27 Season Game Log Support."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -106,7 +106,6 @@ st.markdown(
         color: #334155 !important;
     }
 
-    /* Hit Rate Summary Banner */
     .summary-banner {
         background: #f1f5f9;
         border-radius: 10px;
@@ -148,7 +147,7 @@ with st.container():
     with c2:
         player_name = st.text_input("Player", value="Jayson Tatum" if sport == "NBA" else "Drake Maye")
     with c3:
-        season = st.text_input("Season", value="2025-26" if sport == "NBA" else "2026")
+        season = st.text_input("Season", value="2026-27" if sport == "NBA" else "2026")
 
     c4, c5, c6 = st.columns([1, 1, 1])
     with c4:
@@ -249,7 +248,7 @@ else:
     st.markdown("---")
 
     # 7. GAME LOG BAR CHART (Plotly)
-    st.markdown("### 📊 Game Log Performance")
+    st.markdown("### 📊 2026-27 Game Log Performance")
     
     gamelog_data = res.get("gamelog_details", [])
     if gamelog_data:
@@ -263,8 +262,8 @@ else:
 
         st.markdown(
             f'<div class="summary-banner">'
-            f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
-            f'L5 Hit Rate: <span style="color:#16a34a;">{hit_pct_l5:.0f}%</span> ({l5_hits} of {len(l5_df)}) &nbsp;|&nbsp; '
+            f'Current Season (2026-27) Hit Rate: <span style="color:#dc2626;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
+            f'L5 Hit Rate: <span style="color:#dc2626;">{hit_pct_l5:.0f}%</span> ({l5_hits} of {len(l5_df)}) &nbsp;|&nbsp; '
             f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
             f'Median: {df_chart["stat_value"].median():.2f}'
             f'</div>',
@@ -297,9 +296,8 @@ else:
             line=dict(color="#2563eb", width=2, dash="dash"),
         )
 
-        # Line Label Annotation
         fig.add_annotation(
-            x=len(df_chart) - 0.6,
+            x=len(df_chart) - 0.6 if len(df_chart) > 1 else 0,
             y=line_val,
             text=f"Line: {line_val}",
             showarrow=False,
