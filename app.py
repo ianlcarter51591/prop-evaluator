@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with 2026-27 Season Game Log Support."""
+"""Vision UI Sports Prop Evaluator with Strict Current Season Logs."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -145,7 +145,7 @@ with st.container():
     with c1:
         sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
     with c2:
-        player_name = st.text_input("Player", value="Jayson Tatum" if sport == "NBA" else "Drake Maye")
+        player_name = st.text_input("Player", value="Tyrese Maxey" if sport == "NBA" else "Drake Maye")
     with c3:
         season = st.text_input("Season", value="2026-27" if sport == "NBA" else "2026")
 
@@ -192,7 +192,7 @@ with st.expander("⚙️ Advanced Model Settings"):
     with ac1:
         ewma_decay = st.slider("EWMA Decay Factor", 0.5, 0.99, 0.8, 0.01)
     with ac2:
-        max_recent_games = st.slider("Max Recent Games Sample", 3, 20, 10, 1)
+        max_recent_games = st.slider("Max Recent Games Sample", 1, 20, 10, 1)
 
 # 6. Run Evaluation Engine
 res = evaluate_prop_multisport(
@@ -248,7 +248,7 @@ else:
     st.markdown("---")
 
     # 7. GAME LOG BAR CHART (Plotly)
-    st.markdown("### 📊 2026-27 Game Log Performance")
+    st.markdown("### 📊 Current Season Game Log Performance")
     
     gamelog_data = res.get("gamelog_details", [])
     if gamelog_data:
@@ -256,14 +256,10 @@ else:
         
         over_hits = df_chart[df_chart["stat_value"] > line_val]
         hit_pct_season = (len(over_hits) / len(df_chart)) * 100
-        l5_df = df_chart.tail(5)
-        l5_hits = len(l5_df[l5_df["stat_value"] > line_val])
-        hit_pct_l5 = (l5_hits / len(l5_df)) * 100 if len(l5_df) > 0 else 0
 
         st.markdown(
             f'<div class="summary-banner">'
-            f'Current Season (2026-27) Hit Rate: <span style="color:#dc2626;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
-            f'L5 Hit Rate: <span style="color:#dc2626;">{hit_pct_l5:.0f}%</span> ({l5_hits} of {len(l5_df)}) &nbsp;|&nbsp; '
+            f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
             f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
             f'Median: {df_chart["stat_value"].median():.2f}'
             f'</div>',
