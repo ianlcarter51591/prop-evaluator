@@ -1,6 +1,7 @@
 """NBA and MLB game-log fetchers that return a common schema for the props app."""
 from __future__ import annotations
 
+import os
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -9,44 +10,104 @@ import pandas as pd
 import requests
 import streamlit as st
 
+# Retrieve BallDontLie API key from Streamlit secrets or environment variable
+BDL_API_KEY = st.secrets.get("BDL_API_KEY", os.getenv("BDL_API_KEY", ""))
+
 MLB_BASE: str = "https://statsapi.mlb.com/api/v1"
+BDL_BASE: str = "https://api.balldontlie.io/v1"
 TIMEOUT: int = 10
+
 HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
 }
 
 
-def mlb_season(today: Optional[date] = None) -> int:
-    """Return the MLB season year (Mar–Dec -> that year, Jan–Feb -> prior year)."""
-    today = today or date.today()
-    return today.year if today.month >= 3 else today.year - 1
-
-
-def nba_season_start(today: Optional[date] = None) -> int:
-    """Return the NBA season start year (Oct–Dec -> that year, else prior year)."""
-    today = today or date.today()
-    return today.year if today.month >= 10 else today.year - 1
-
-
-def nba_season_str(start: int) -> str:
-    """e.g. 2025 -> '2025-26'."""
-    nxt = (start + 1) % 100
-    return f"{start}-{nxt:02d}"
-
-
 # ---------------------------------------------------------------------------
-# NBA Game Logs (Powered by ESPN Public API to avoid Cloud IP Blocking)
+# BallDontLie NBA Fetcher
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=3600)
-def fetch_nba_player_logs(
-    player_name: str, target_season: Optional[int] = None
+def _fetch_bdl_nba_logs(
+    player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch current-season NBA player game logs strictly, regardless of sample size."""
+    """Fetch NBA player logs from BallDontLie API using API Key authorization."""
+    if not BDL_API_KEY:
+        return pd.DataFrame(), "No BallDontLie API Key configured."
+
+    bdl_headers = {"Authorization": BDL_API_KEY}
+
     try:
-        # 1. Search for player ID on ESPN
+        # 1. Search Player
+        search_res = requests.get(
+            f"{BDL_BASE}/players?search={requests.utils.quote(player_name)}",
+            headers=bdl_headers,
+            timeout=TIMEOUT,
+        ).json()
+
+        players = search_res.get("data", [])
+        if not players:
+            return pd.DataFrame(), f"Player '{player_name}' not found on BallDontLie."
+
+        player_id = players[0]["id"]
+
+        # Parse season year (e.g., '2025-26' -> 2025)
+        season_year = 2025
+        if target_season:
+            s_str = str(target_season).split("-")[0].strip()
+            if s_str.isdigit():
+                season_year = int(s_str)
+
+        # 2. Fetch Player Game Stats
+        stats_url = f"{BDL_BASE}/stats?player_ids[]={player_id}&seasons[]={season_year}&per_page=100"
+        stats_res = requests.get(
+            stats_url, headers=bdl_headers, timeout=TIMEOUT
+        ).json()
+
+        data = stats_res.get("data", [])
+        if not data:
+            # Fallback check for prior season
+            fallback_url = f"{BDL_BASE}/stats?player_ids[]={player_id}&seasons[]={season_year - 1}&per_page=100"
+            stats_res = requests.get(
+                fallback_url, headers=bdl_headers, timeout=TIMEOUT
+            ).json()
+            data = stats_res.get("data", [])
+
+        if not data:
+            return (
+                pd.DataFrame(),
+                f"No game stats found on BallDontLie for {player_name}.",
+            )
+
+        rows = []
+        for item in data:
+            rows.append(
+                {
+                    "PTS": float(item.get("pts", 0) or 0),
+                    "REB": float(item.get("reb", 0) or 0),
+                    "AST": float(item.get("ast", 0) or 0),
+                    "3PM": float(item.get("fg3m", 0) or 0),
+                    "GAME_DATE": item.get("game", {}).get("date", ""),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        return df, None
+
+    except Exception as e:
+        return pd.DataFrame(), f"BallDontLie fetch error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# ESPN Public API Fallback Fetcher
+# ---------------------------------------------------------------------------
+
+
+def _fetch_espn_nba_logs(
+    player_name: str, target_season: Optional[Any] = None
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fallback NBA fetcher using ESPN public endpoint."""
+    try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
             f"?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=basketball&league=nba"
@@ -59,19 +120,22 @@ def fetch_nba_player_logs(
 
         player_id = items[0].get("id")
 
-        # 2. Fetch athlete gamelog summary for current season
-        gamelog_url = (
-            "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/"
-            f"athletes/{player_id}/gamelog"
-        )
-        g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+        gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{player_id}/gamelog"
+        season_param = ""
+        if target_season:
+            s_str = str(target_season).split("-")[0].strip()
+            if s_str.isdigit():
+                season_param = f"?season={s_str}"
+
+        g_res = requests.get(
+            f"{gamelog_url}{season_param}", headers=HEADERS, timeout=TIMEOUT
+        ).json()
 
         rows = []
-        season_types = g_res.get("seasonTypes", [])
 
-        # Parse season categories (Regular Season & Postseason)
-        for stype in season_types:
-            for category in stype.get("categories", []):
+        def extract_category_rows(categories):
+            cat_rows = []
+            for category in categories:
                 labels = category.get("labels", [])
                 events = category.get("events", [])
                 for event in events:
@@ -81,7 +145,9 @@ def fetch_nba_player_logs(
 
                         def safe_float(val):
                             try:
-                                return float(val) if str(val).strip() != "-" else 0.0
+                                return (
+                                    float(val) if str(val).strip() != "-" else 0.0
+                                )
                             except (ValueError, TypeError):
                                 return 0.0
 
@@ -89,93 +155,71 @@ def fetch_nba_player_logs(
                         row["REB"] = safe_float(row.get("REB", 0))
                         row["AST"] = safe_float(row.get("AST", 0))
                         fg3_str = str(row.get("3PT", "0-0"))
-                        row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
-                        rows.append(row)
+                        row["3PM"] = (
+                            safe_float(fg3_str.split("-")[0])
+                            if "-" in fg3_str
+                            else safe_float(row.get("3PM", 0))
+                        )
+                        cat_rows.append(row)
+            return cat_rows
 
-        # 3. Direct events parsing fallback for current season
-        if not rows and "events" in g_res:
-            labels = g_res.get("labels", [])
-            for event_id, event_data in g_res.get("events", {}).items():
-                stats = event_data.get("stats", [])
-                if stats and labels and len(stats) == len(labels):
-                    row = dict(zip(labels, stats))
-
-                    def safe_float(val):
-                        try:
-                            return float(val) if str(val).strip() != "-" else 0.0
-                        except (ValueError, TypeError):
-                            return 0.0
-
-                    row["PTS"] = safe_float(row.get("PTS", 0))
-                    row["REB"] = safe_float(row.get("REB", 0))
-                    row["AST"] = safe_float(row.get("AST", 0))
-                    fg3_str = str(row.get("3PT", "0-0"))
-                    row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
-                    rows.append(row)
+        for stype in g_res.get("seasonTypes", []):
+            rows.extend(extract_category_rows(stype.get("categories", [])))
 
         if not rows:
-            return pd.DataFrame(), f"No current-season games found for {player_name}."
+            return pd.DataFrame(), f"No games found for {player_name} on ESPN."
 
-        df = pd.DataFrame(rows)
-        return df, None
+        return pd.DataFrame(rows), None
 
     except Exception as e:
         return pd.DataFrame(), f"ESPN NBA fetch failed: {e}"
+
+
 # ---------------------------------------------------------------------------
-# MLB Game Logs (MLB StatsAPI)
+# Primary Unified Fetcher Function
 # ---------------------------------------------------------------------------
 
 
 @st.cache_data(ttl=3600)
-def _mlb_search_player(name: str) -> Optional[int]:
-    """Search MLB StatsAPI for a player ID by name."""
-    url = f"{MLB_BASE}/people/search"
-    res = requests.get(url, params={"query": name}, headers=HEADERS, timeout=TIMEOUT)
-    if res.status_code != 200:
-        return None
-    people = res.json().get("people", [])
-    if not people:
-        return None
-    return people[0]["id"]
+def fetch_nba_player_logs(
+    player_name: str, target_season: Optional[Any] = None
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Try BallDontLie first (if API key provided), fallback to ESPN automatically."""
+    if BDL_API_KEY:
+        df, err = _fetch_bdl_nba_logs(player_name, target_season)
+        if not err and not df.empty:
+            return df, None
+
+    # Fallback to ESPN if BDL is unconfigured or returns an error
+    return _fetch_espn_nba_logs(player_name, target_season)
 
 
 @st.cache_data(ttl=3600)
 def fetch_mlb_player_logs(
     player_name: str, target_season: Optional[int] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch MLB player game logs for current and prior season."""
+    """Fetch MLB player game logs via StatsAPI."""
     try:
-        player_id = _mlb_search_player(player_name)
-        if not player_id:
+        url = f"{MLB_BASE}/people/search"
+        res = requests.get(
+            url, params={"query": player_name}, headers=HEADERS, timeout=TIMEOUT
+        )
+        people = res.json().get("people", [])
+        if not people:
             return pd.DataFrame(), f"MLB player '{player_name}' not found."
 
-        season = target_season or mlb_season()
-        seasons_to_fetch = [season, season - 1]
-        frames = []
-
-        for s in seasons_to_fetch:
-            url = f"{MLB_BASE}/people/{player_id}/stats"
-            params = {
-                "stats": "gameLog",
-                "season": s,
-                "group": "hitting",
-            }
-            res = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
-            if res.status_code == 200:
-                splits = res.json().get("stats", [{}])[0].get("splits", [])
-                rows = []
-                for split in splits:
-                    stat = split.get("stat", {})
-                    stat["gameDate"] = split.get("date", "")
-                    rows.append(stat)
-                if rows:
-                    frames.append(pd.DataFrame(rows))
-
-        if not frames:
-            return pd.DataFrame(), f"No MLB game logs found for {player_name}."
-
-        df = pd.concat(frames, ignore_index=True)
-        return df, None
-
+        player_id = people[0]["id"]
+        season = target_season or date.today().year
+        stats_url = f"{MLB_BASE}/people/{player_id}/stats"
+        params = {"stats": "gameLog", "season": season, "group": "hitting"}
+        res = requests.get(
+            stats_url, params=params, headers=HEADERS, timeout=TIMEOUT
+        )
+        if res.status_code == 200:
+            splits = res.json().get("stats", [{}])[0].get("splits", [])
+            rows = [s.get("stat", {}) for s in splits]
+            if rows:
+                return pd.DataFrame(rows), None
+        return pd.DataFrame(), f"No MLB game logs found for {player_name}."
     except Exception as e:
         return pd.DataFrame(), f"MLB fetch failed: {e}"
