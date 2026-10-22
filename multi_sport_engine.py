@@ -1,4 +1,4 @@
-"""Multi-sport evaluation engine targeting current season logs."""
+"""Multi-sport evaluation engine with exact active game log details."""
 import numpy as np
 import pandas as pd
 from sports_data import (
@@ -42,16 +42,16 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop using real season game logs."""
+    """Evaluate sports prop using active season game logs."""
     try:
         stats = []
         gamelog_details = []
 
-        # 1. Fetch Logs
+        # 1. Fetch Game Logs
         if league == "NBA":
             df, err = fetch_nba_player_logs(player_name)
             if err or df is None or df.empty:
-                return {"error": err or f"No current season game logs found for '{player_name}'."}
+                return {"error": err or f"No active season game logs found for '{player_name}'."}
 
             df.columns = [str(c).upper().strip() for c in df.columns]
             target_stat = stat_category.upper()
@@ -66,7 +66,7 @@ def evaluate_prop_multisport(
         elif league == "NFL":
             df, err = fetch_nfl_player_logs(player_name)
             if err or df is None or df.empty:
-                return {"error": err or f"No current season game logs found for '{player_name}'."}
+                return {"error": err or f"No active season game logs found for '{player_name}'."}
 
             df.columns = [str(c).upper().strip() for c in df.columns]
             stat_clean = stat_category.upper().strip()
@@ -92,7 +92,7 @@ def evaluate_prop_multisport(
         elif league == "MLB":
             df, err = fetch_mlb_player_logs(player_name)
             if err or df is None or df.empty:
-                return {"error": err or f"No current season game logs found for '{player_name}'."}
+                return {"error": err or f"No active season game logs found for '{player_name}'."}
 
             df.columns = [str(c).lower().strip() for c in df.columns]
             col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
@@ -105,9 +105,10 @@ def evaluate_prop_multisport(
                     gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
         if not stats:
-            return {"error": f"Stat category '{stat_category}' was not found in game logs for '{player_name}'."}
+            return {"error": f"Stat category '{stat_category}' not found in logs for '{player_name}'."}
 
-        stats_arr = np.array(stats)
+        stats_arr = np.array(stats[:max_recent_games])
+        gamelog_details = gamelog_details[:max_recent_games]
 
         # 2. Dynamic Calculations
         if projection_source == "Model (EWMA mean)":
