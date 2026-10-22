@@ -1,4 +1,4 @@
-"""NBA, NFL, and MLB game-log fetchers that return a common schema for the props app."""
+"""NBA, NFL, and MLB game-log fetchers with multi-level fallbacks for the props app."""
 from __future__ import annotations
 
 import os
@@ -190,7 +190,7 @@ def fetch_nba_player_logs(
 
 
 # ---------------------------------------------------------------------------
-# ESPN Public API NFL Fetcher
+# Robust ESPN Public API NFL Fetcher
 # ---------------------------------------------------------------------------
 
 
@@ -198,7 +198,7 @@ def fetch_nba_player_logs(
 def fetch_nfl_player_logs(
     player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NFL player game logs via ESPN API."""
+    """Fetch NFL player game logs via ESPN API with comprehensive parsing."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -215,34 +215,65 @@ def fetch_nfl_player_logs(
         g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
         rows = []
 
+        def safe_float(v):
+            try:
+                if str(v).strip() in ["-", "", "None"]:
+                    return 0.0
+                return float(str(v).replace(",", ""))
+            except (ValueError, TypeError):
+                return 0.0
+
+        # Method A: Parse via seasonTypes -> categories
         for stype in g_res.get("seasonTypes", []):
             for category in stype.get("categories", []):
                 labels = category.get("labels", [])
                 events = category.get("events", [])
                 for event in events:
                     stats = event.get("stats", [])
-                    if stats and labels and len(stats) == len(labels):
-                        row = dict(zip(labels, stats))
+                    if stats and labels:
+                        row = {}
+                        for lbl, val in zip(labels, stats):
+                            row[lbl.upper().strip()] = safe_float(val)
 
-                        def safe_float(v):
-                            try:
-                                return float(v) if str(v).strip() != "-" else 0.0
-                            except (ValueError, TypeError):
-                                return 0.0
+                        # Flexible column mapping
+                        pass_yds = row.get("YDS", row.get("PASS YDS", row.get("PYDS", 0)))
+                        pass_tds = row.get("TD", row.get("PASS TD", row.get("PTD", 0)))
+                        rush_yds = row.get("RUSH YDS", row.get("YDS", 0))
+                        rec_yds = row.get("REC YDS", row.get("YDS", 0))
+                        receptions = row.get("REC", row.get("RECEPTIONS", 0))
 
-                        row["PASS_YDS"] = safe_float(row.get("YDS", row.get("PASS YDS", 0)))
-                        row["PASS_TDS"] = safe_float(row.get("TD", row.get("PASS TD", 0)))
-                        row["RUSH_YDS"] = safe_float(row.get("YDS", row.get("RUSH YDS", 0)))
-                        row["REC_YDS"] = safe_float(row.get("YDS", row.get("REC YDS", 0)))
-                        row["RECEPTIONS"] = safe_float(row.get("REC", 0))
-                        rows.append(row)
+                        rows.append({
+                            "PASS_YDS": pass_yds,
+                            "PASS_TDS": pass_tds,
+                            "RUSH_YDS": rush_yds,
+                            "REC_YDS": rec_yds,
+                            "RECEPTIONS": receptions,
+                            "RAW": row
+                        })
+
+        # Method B: Parse direct event maps if seasonTypes is empty
+        if not rows and "events" in g_res:
+            events_dict = g_res.get("events", {})
+            labels = g_res.get("labels", [])
+            for event_id, event_data in events_dict.items():
+                stats = event_data.get("stats", [])
+                if stats and labels:
+                    row = {lbl.upper().strip(): safe_float(val) for lbl, val in zip(labels, stats)}
+                    rows.append({
+                        "PASS_YDS": row.get("YDS", row.get("PASS YDS", 0)),
+                        "PASS_TDS": row.get("TD", row.get("PASS TD", 0)),
+                        "RUSH_YDS": row.get("YDS", 0),
+                        "REC_YDS": row.get("YDS", 0),
+                        "RECEPTIONS": row.get("REC", 0),
+                        "RAW": row
+                    })
 
         if not rows:
-            return pd.DataFrame(), f"No game logs found for {player_name}."
+            return pd.DataFrame(), f"No game stats found for {player_name}."
 
         return pd.DataFrame(rows), None
     except Exception as e:
-        return pd.DataFrame(), f"NFL fetch failed: {e}"
+        return pd.DataFrame(), f"NFL fetch error: {e}"
 
 
 # ---------------------------------------------------------------------------
