@@ -1,4 +1,4 @@
-"""NBA, NFL, and MLB game-log fetchers targeting 2026-27 season stats."""
+"""NBA, NFL, and MLB game-log fetchers strictly filtered to current season logs."""
 from __future__ import annotations
 
 import os
@@ -26,7 +26,7 @@ HEADERS: Dict[str, str] = {
 def fetch_nba_player_logs(
     player_name: str, target_season: Optional[Any] = "2026-27"
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch 2026-27 NBA player game logs with opponent details via ESPN API."""
+    """Fetch NBA player game logs strictly for the 2026-27 season via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -38,7 +38,7 @@ def fetch_nba_player_logs(
             return pd.DataFrame(), f"NBA player '{player_name}' not found on ESPN."
 
         player_id = items[0].get("id")
-        # Query 2027 season for 2026-27 NBA regular season
+        # Query 2027 season parameter for 2026-27 NBA season
         gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{player_id}/gamelog?season=2027"
 
         g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
@@ -50,8 +50,8 @@ def fetch_nba_player_logs(
                 events = category.get("events", [])
                 for event in events:
                     game_date = event.get("gameDate", "")
-                    # Ensure game belongs to 2026-27 campaign (starting Oct 2026)
-                    if not game_date.startswith("2026") and not game_date.startswith("2027"):
+                    # Strictly keep only games starting Oct 2026 onwards for 2026-27 season
+                    if not (game_date.startswith("2026-1") or game_date.startswith("2026-11") or game_date.startswith("2026-12") or game_date.startswith("2027")):
                         continue
 
                     stats = event.get("stats", [])
@@ -84,7 +84,7 @@ def fetch_nba_player_logs(
                         })
 
         if not rows:
-            return pd.DataFrame(), f"No 2026-27 games found for {player_name}."
+            return pd.DataFrame(), f"No 2026-27 game logs found for {player_name}."
 
         return pd.DataFrame(rows), None
     except Exception as e:
@@ -95,7 +95,7 @@ def fetch_nba_player_logs(
 def fetch_nfl_player_logs(
     player_name: str, target_season: Optional[Any] = "2026"
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch 2026 NFL player game logs via ESPN API."""
+    """Fetch NFL player game logs strictly for the 2026 season via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -159,7 +159,7 @@ def fetch_nfl_player_logs(
 def fetch_mlb_player_logs(
     player_name: str, target_season: Optional[int] = 2026
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch 2026 MLB player game logs via StatsAPI."""
+    """Fetch MLB player game logs strictly for 2026 via StatsAPI."""
     try:
         url = f"{MLB_BASE}/people/search"
         res = requests.get(
