@@ -26,7 +26,7 @@ HEADERS: Dict[str, str] = {
 def fetch_nba_player_logs(
     player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player game logs with opponent details via ESPN API."""
+    """Fetch NBA player game logs with NBA opponents via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -51,19 +51,21 @@ def fetch_nba_player_logs(
                     stats = event.get("stats", [])
                     opponent = event.get("opponent", {}).get("abbreviation", "OPP")
                     is_home = event.get("homeAway") == "home"
-                    game_date = event.get("gameDate", "")[:10]
+                    game_date = event.get("gameDate", "")[5:10].replace("-", "/")
 
                     if stats and labels:
                         row = dict(zip(labels, stats))
 
                         def safe_float(v):
                             try:
-                                return float(v) if str(v).strip() != "-" else 0.0
+                                if str(v).strip() in ["-", "", "None"]:
+                                    return 0.0
+                                return float(str(v).replace(",", ""))
                             except (ValueError, TypeError):
                                 return 0.0
 
                         fg3_str = str(row.get("3PT", "0-0"))
-                        fg3_val = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else 0.0
+                        fg3_val = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
 
                         rows.append({
                             "PTS": safe_float(row.get("PTS", 0)),
@@ -86,7 +88,7 @@ def fetch_nba_player_logs(
 def fetch_nfl_player_logs(
     player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NFL player game logs with opponent details via ESPN API."""
+    """Fetch NFL player game logs with NFL opponents via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -169,7 +171,7 @@ def fetch_mlb_player_logs(
                 stat_data = s.get("stat", {})
                 opp_name = s.get("opponent", {}).get("name", "OPP")[:3].upper()
                 is_home = s.get("isHome", False)
-                g_date = s.get("date", "")[5:]
+                g_date = s.get("date", "")[5:].replace("-", "/")
                 stat_data["OPPONENT"] = f"vs {opp_name}" if is_home else f"@ {opp_name}"
                 stat_data["DATE"] = g_date
                 rows.append(stat_data)
