@@ -1,4 +1,4 @@
-"""Multi-sport evaluation engine operating strictly on current season logs."""
+"""Multi-sport evaluation engine targeting current season logs."""
 import numpy as np
 import pandas as pd
 from sports_data import (
@@ -42,69 +42,74 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop strictly using current season game logs."""
+    """Evaluate sports prop using real season game logs."""
     try:
         stats = []
         gamelog_details = []
 
-        # 1. Fetch Current Season Logs
+        # 1. Fetch Logs
         if league == "NBA":
-            df, err = fetch_nba_player_logs(player_name, target_season="2026-27")
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).upper().strip() for c in df.columns]
-                target_stat = stat_category.upper()
-                if target_stat in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(target_stat, 0.0))
-                        opp = str(r.get("OPPONENT", "vs OPP"))
-                        gdate = str(r.get("DATE", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+            df, err = fetch_nba_player_logs(player_name)
+            if err or df is None or df.empty:
+                return {"error": err or f"No current season game logs found for '{player_name}'."}
+
+            df.columns = [str(c).upper().strip() for c in df.columns]
+            target_stat = stat_category.upper()
+            if target_stat in df.columns:
+                for _, r in df.iterrows():
+                    val = float(r.get(target_stat, 0.0))
+                    opp = str(r.get("OPPONENT", "vs OPP"))
+                    gdate = str(r.get("DATE", ""))
+                    stats.append(val)
+                    gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
         elif league == "NFL":
-            df, err = fetch_nfl_player_logs(player_name, target_season="2026")
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).upper().strip() for c in df.columns]
-                stat_clean = stat_category.upper().strip()
-                if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
-                    target_stat = "PASS_TDS"
-                elif "RUSHING YARD" in stat_clean or "RUSH YD" in stat_clean:
-                    target_stat = "RUSH_YDS"
-                elif "RECEIVING YARD" in stat_clean or "REC YD" in stat_clean:
-                    target_stat = "REC_YDS"
-                elif "RECEPTION" in stat_clean:
-                    target_stat = "RECEPTIONS"
-                else:
-                    target_stat = "PASS_YDS"
+            df, err = fetch_nfl_player_logs(player_name)
+            if err or df is None or df.empty:
+                return {"error": err or f"No current season game logs found for '{player_name}'."}
 
-                if target_stat in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(target_stat, 0.0))
-                        opp = str(r.get("OPPONENT", "vs OPP"))
-                        gdate = str(r.get("DATE", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+            df.columns = [str(c).upper().strip() for c in df.columns]
+            stat_clean = stat_category.upper().strip()
+            if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
+                target_stat = "PASS_TDS"
+            elif "RUSHING YARD" in stat_clean or "RUSH YD" in stat_clean:
+                target_stat = "RUSH_YDS"
+            elif "RECEIVING YARD" in stat_clean or "REC YD" in stat_clean:
+                target_stat = "REC_YDS"
+            elif "RECEPTION" in stat_clean:
+                target_stat = "RECEPTIONS"
+            else:
+                target_stat = "PASS_YDS"
+
+            if target_stat in df.columns:
+                for _, r in df.iterrows():
+                    val = float(r.get(target_stat, 0.0))
+                    opp = str(r.get("OPPONENT", "vs OPP"))
+                    gdate = str(r.get("DATE", ""))
+                    stats.append(val)
+                    gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
         elif league == "MLB":
-            df, err = fetch_mlb_player_logs(player_name, target_season=2026)
-            if not err and df is not None and not df.empty:
-                df.columns = [str(c).lower().strip() for c in df.columns]
-                col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
-                if col_name in df.columns:
-                    for _, r in df.iterrows():
-                        val = float(r.get(col_name, 0.0))
-                        opp = str(r.get("opponent", "vs OPP"))
-                        gdate = str(r.get("date", ""))
-                        stats.append(val)
-                        gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
+            df, err = fetch_mlb_player_logs(player_name)
+            if err or df is None or df.empty:
+                return {"error": err or f"No current season game logs found for '{player_name}'."}
+
+            df.columns = [str(c).lower().strip() for c in df.columns]
+            col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
+            if col_name in df.columns:
+                for _, r in df.iterrows():
+                    val = float(r.get(col_name, 0.0))
+                    opp = str(r.get("opponent", "vs OPP"))
+                    gdate = str(r.get("date", ""))
+                    stats.append(val)
+                    gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
         if not stats:
-            return {"error": f"No current 2026-27 season game logs found for '{player_name}'."}
+            return {"error": f"Stat category '{stat_category}' was not found in game logs for '{player_name}'."}
 
-        # Do NOT pad or backfill with prior season games; use exact current season sample
         stats_arr = np.array(stats)
 
-        # 2. Dynamic Calculations on Current Season Only
+        # 2. Dynamic Calculations
         if projection_source == "Model (EWMA mean)":
             base_mean = calculate_ewma(stats_arr, decay=ewma_decay)
         elif projection_source == "My mean":
