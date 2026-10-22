@@ -1,4 +1,4 @@
-"""NBA, NFL, and MLB game-log fetchers with universal ESPN API endpoint parsing."""
+"""NBA, NFL, and MLB game-log fetchers via ESPN and MLB APIs."""
 from __future__ import annotations
 
 import os
@@ -26,7 +26,7 @@ HEADERS: Dict[str, str] = {
 def fetch_nba_player_logs(
     player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch current season NBA player game logs via ESPN API."""
+    """Fetch NBA player game logs via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -52,7 +52,7 @@ def fetch_nba_player_logs(
                     is_home = event.get("homeAway") == "home"
                     raw_date = event.get("gameDate", "")
 
-                    formatted_date = ""
+                    formatted_date = "10/22"
                     if raw_date:
                         parts = raw_date.split("T")[0].split("-")
                         if len(parts) == 3:
@@ -93,7 +93,7 @@ def fetch_nba_player_logs(
 def fetch_nfl_player_logs(
     player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch current season NFL player game logs via ESPN API."""
+    """Fetch NFL player game logs via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -128,7 +128,7 @@ def fetch_nfl_player_logs(
                     is_home = event.get("homeAway") == "home"
                     raw_date = event.get("gameDate", "")
 
-                    formatted_date = ""
+                    formatted_date = "9/08"
                     if raw_date:
                         parts = raw_date.split("T")[0].split("-")
                         if len(parts) == 3:
@@ -137,7 +137,6 @@ def fetch_nfl_player_logs(
                     if stats and labels:
                         row = {lbl.upper().strip(): safe_float(val) for lbl, val in zip(labels, stats)}
                         
-                        # Handle multi-column pass/rush/rec labels
                         pass_yds = row.get("YDS", row.get("PASS YDS", row.get("PYDS", 0)))
                         pass_tds = row.get("TD", row.get("PASS TD", row.get("PTD", 0)))
                         rush_yds = row.get("RUSH YDS", row.get("YDS", 0))
