@@ -1,4 +1,4 @@
-"""Multi-sport evaluation engine with dynamic game log stat syncing."""
+"""Multi-sport evaluation engine with league-appropriate mock fallbacks."""
 import numpy as np
 import pandas as pd
 from sports_data import (
@@ -42,12 +42,12 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop and generate strictly synced game log details."""
+    """Evaluate sports prop and generate league-accurate game log details."""
     try:
         stats = []
         gamelog_details = []
 
-        # 1. Fetch Logs & Strictly Map Selected Stat Category
+        # 1. Fetch Logs
         if league == "NBA":
             df, err = fetch_nba_player_logs(player_name)
             if not err and df is not None and not df.empty:
@@ -65,7 +65,6 @@ def evaluate_prop_multisport(
             df, err = fetch_nfl_player_logs(player_name)
             if not err and df is not None and not df.empty:
                 df.columns = [str(c).upper().strip() for c in df.columns]
-                
                 stat_clean = stat_category.upper().strip()
                 if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
                     target_stat = "PASS_TDS"
@@ -99,22 +98,36 @@ def evaluate_prop_multisport(
                         stats.append(val)
                         gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
 
-        # Category-Specific Fallbacks if logs return empty
+        # 2. League-Specific Mock Fallbacks if API returns empty
         if not stats:
-            mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
-            mock_dates = ["9/09", "9/20", "9/27", "10/04", "10/11", "10/18"]
+            if league == "NBA":
+                mock_opps = ["vs MIA", "@ NYK", "@ BKN", "vs PHI", "vs MIL", "@ TOR"]
+                mock_dates = ["10/22", "10/24", "10/26", "10/29", "11/01", "11/03"]
+                stat_clean = stat_category.upper().strip()
+                if "3PM" in stat_clean:
+                    mock_vals = [3.0, 4.0, 2.0, 5.0, 3.0, 4.0]
+                elif "REB" in stat_clean or "AST" in stat_clean:
+                    mock_vals = [7.0, 9.0, 6.0, 8.0, 10.0, 7.0]
+                else:  # PTS
+                    mock_vals = [27.0, 31.0, 24.0, 28.0, 33.0, 26.0]
 
-            stat_clean = stat_category.upper().strip()
-            if "TD" in stat_clean:
-                mock_vals = [1.0, 2.0, 1.0, 2.0, 3.0, 1.0]
-            elif "RECEPTION" in stat_clean or "3PM" in stat_clean:
-                mock_vals = [5.0, 7.0, 4.0, 6.0, 8.0, 5.0]
-            elif "PASS" in stat_clean:
-                mock_vals = [178.0, 208.0, 199.0, 269.0, 374.0, 235.0]
-            elif "RUSH" in stat_clean or "REC" in stat_clean:
-                mock_vals = [45.0, 62.0, 38.0, 75.0, 88.0, 52.0]
-            else:
-                mock_vals = [24.0, 28.0, 22.0, 26.0, 30.0, 21.0]
+            elif league == "MLB":
+                mock_opps = ["vs NYY", "@ BAL", "@ TOR", "vs TB", "vs BOS", "@ CLE"]
+                mock_dates = ["5/10", "5/12", "5/15", "5/18", "5/21", "5/24"]
+                mock_vals = [1.0, 2.0, 0.0, 1.0, 3.0, 1.0]
+
+            else:  # NFL
+                mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
+                mock_dates = ["9/09", "9/20", "9/27", "10/04", "10/11", "10/18"]
+                stat_clean = stat_category.upper().strip()
+                if "TD" in stat_clean:
+                    mock_vals = [1.0, 2.0, 1.0, 2.0, 3.0, 1.0]
+                elif "RECEPTION" in stat_clean:
+                    mock_vals = [5.0, 7.0, 4.0, 6.0, 8.0, 5.0]
+                elif "PASS" in stat_clean:
+                    mock_vals = [178.0, 208.0, 199.0, 269.0, 374.0, 235.0]
+                else:
+                    mock_vals = [45.0, 62.0, 38.0, 75.0, 88.0, 52.0]
 
             for v, o, d in zip(mock_vals, mock_opps, mock_dates):
                 stats.append(v)
@@ -123,7 +136,7 @@ def evaluate_prop_multisport(
         stats_arr = np.array(stats[:max_recent_games])
         gamelog_details = gamelog_details[:max_recent_games]
 
-        # 2. Projections
+        # 3. Projections
         if projection_source == "Model (EWMA mean)":
             base_mean = calculate_ewma(stats_arr, decay=ewma_decay)
         elif projection_source == "My mean":
@@ -138,7 +151,7 @@ def evaluate_prop_multisport(
         if std_dev == 0:
             std_dev = 0.5
 
-        # 3. Monte Carlo Simulation
+        # 4. Monte Carlo Simulation
         simulations = np.random.normal(proj_mean, std_dev, 10000)
         over_hits = np.sum(simulations > line)
         over_model_pct = (over_hits / 10000) * 100
