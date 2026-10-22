@@ -1,289 +1,256 @@
+"""Vision UI Sports Prop Evaluator with Live DraftKings Odds Integration (Light Theme)."""
 import streamlit as st
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 from multi_sport_engine import evaluate_prop_multisport
+from odds_client import fetch_player_prop_line
 
-# ---------------------------------------------------------------------------
-# Page Configuration
-# ---------------------------------------------------------------------------
+# 1. Page Config
 st.set_page_config(
-    page_title="Prop Evaluator | Vision UI",
+    page_title="Vision UI - Prop Evaluator",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# ---------------------------------------------------------------------------
-# Vision UI Dark Glassmorphism CSS Injector
-# ---------------------------------------------------------------------------
-VISION_UI_CSS = """
-<style>
-/* App Main Canvas Background */
-.stApp {
-    background: radial-gradient(circle at 15% 15%, rgba(0, 117, 255, 0.12) 0%, transparent 40%),
-                radial-gradient(circle at 85% 85%, rgba(111, 66, 193, 0.12) 0%, transparent 40%),
-                #060B26 !important;
-    color: #FFFFFF !important;
-}
-
-/* Hide Default Sidebar Completely */
-[data-testid="stSidebar"] {
-    display: none !important;
-}
-
-/* Glassmorphism Cards & Container Containers */
-.vision-card {
-    background: rgba(15, 21, 53, 0.65) !important;
-    backdrop-filter: blur(16px) !important;
-    -webkit-backdrop-filter: blur(16px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 16px !important;
-    padding: 20px !important;
-    margin-bottom: 20px !important;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
-}
-
-/* Metrics Cards */
-[data-testid="stMetric"] {
-    background: rgba(15, 21, 53, 0.65) !important;
-    backdrop-filter: blur(16px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 14px !important;
-    padding: 14px 18px !important;
-}
-
-[data-testid="stMetricValue"] {
-    color: #FFFFFF !important;
-    font-weight: 700 !important;
-}
-
-[data-testid="stMetricLabel"] {
-    color: #A0AEC0 !important;
-    font-size: 0.82rem !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-}
-
-/* Electric Blue Buttons */
-.stButton > button {
-    background: linear-gradient(135deg, #0075FF 0%, #0052D4 100%) !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    border-radius: 12px !important;
-    font-weight: 600 !important;
-    padding: 10px 24px !important;
-    transition: all 0.3s ease !important;
-    box-shadow: 0 4px 15px rgba(0, 117, 255, 0.4) !important;
-    width: 100% !important;
-}
-
-.stButton > button:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 6px 20px rgba(0, 117, 255, 0.6) !important;
-}
-
-/* Inputs, Selectboxes & Number Inputs */
-div[data-baseweb="input"], div[data-baseweb="select"] {
-    background: rgba(15, 21, 53, 0.8) !important;
-    border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    border-radius: 12px !important;
-    color: #FFFFFF !important;
-}
-
-/* Mobile Responsive Adjustments (iPhone Auto-Stacking) */
-@media (max-width: 768px) {
-    [data-testid="column"] {
-        width: 100% !important;
-        flex: 1 1 100% !important;
-        min-width: 100% !important;
-        margin-bottom: 10px !important;
+# 2. White / Light Theme Vision UI CSS Injection
+st.markdown(
+    """
+    <style>
+    /* Main Background & Text */
+    .stApp {
+        background-color: #f8fafc;
+        color: #0f172a;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
-}
-</style>
-"""
-st.markdown(VISION_UI_CSS, unsafe_allow_html=True)
+    
+    /* Header Container */
+    .vision-header {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    }
+    
+    .vision-title {
+        color: #0f172a;
+        font-size: 28px;
+        font-weight: 800;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .vision-sub {
+        color: #64748b;
+        font-size: 14px;
+        margin-top: 4px;
+    }
 
-# ---------------------------------------------------------------------------
-# Header & Navigation Banner
-# ---------------------------------------------------------------------------
-st.title("⚡ Prop Evaluator")
-st.caption("High-performance Monte Carlo sports prop analytics platform")
+    /* Cards & Containers */
+    div[data-testid="stForm"], .vision-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+    }
 
-# ---------------------------------------------------------------------------
-# TOP CONTROL PANEL (Controls Above Evaluation)
-# ---------------------------------------------------------------------------
-st.markdown('<div class="vision-card">', unsafe_allow_html=True)
+    /* Metric Box */
+    .metric-box {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+    }
+    .metric-label {
+        color: #64748b;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .metric-value {
+        color: #0f172a;
+        font-size: 24px;
+        font-weight: 800;
+        margin-top: 4px;
+    }
+    .metric-value-green {
+        color: #16a34a;
+        font-size: 24px;
+        font-weight: 800;
+        margin-top: 4px;
+    }
 
-# Sport Selector
-sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True)
+    /* Inputs Styling */
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+        border-radius: 10px !important;
+        border: 1px solid #cbd5e1 !important;
+    }
+    
+    /* Primary Button */
+    .stButton>button {
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        border-radius: 10px !important;
+        border: none !important;
+        padding: 10px 20px !important;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2) !important;
+    }
 
-# Main Prop Parameters Grid
-col_player, col_season, col_stat, col_line = st.columns([2, 1, 1.5, 1])
+    /* Target specific dark labels to be dark slate */
+    label, p, span {
+        color: #334155 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-with col_player:
-    player_name = st.text_input("Player", value="Aaron Rodgers" if sport == "NFL" else "Jayson Tatum")
+# 3. Session State Initialization for Inputs
+if "line" not in st.session_state:
+    st.session_state["line"] = 21.50
+if "over_odds" not in st.session_state:
+    st.session_state["over_odds"] = -114
+if "under_odds" not in st.session_state:
+    st.session_state["under_odds"] = -112
 
-with col_season:
-    default_season = 2026 if sport != "NBA" else "2025-26"
-    season = st.text_input("Season", value=str(default_season))
+# 4. App Header
+st.markdown(
+    """
+    <div class="vision-header">
+        <div class="vision-title">⚡ Prop Evaluator</div>
+        <div class="vision-sub">High-performance Monte Carlo sports prop analytics platform</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-with col_stat:
-    if sport == "NFL":
-        stat_options = ["Pass Completions", "Passing Yards", "Passing TDs"]
-    elif sport == "NBA":
-        stat_options = ["PTS", "REB", "AST", "3PM"]
-    else:
-        stat_options = ["Hits", "Total Bases", "Strikeouts"]
-    stat_category = st.selectbox("Stat Category", stat_options)
+# 5. Control Inputs
+with st.container():
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
+    with c2:
+        player_name = st.text_input("Player", value="Jayson Tatum" if sport == "NBA" else "Drake Maye")
+    with c3:
+        season = st.text_input("Season", value="2025-26" if sport == "NBA" else "2026")
 
-with col_line:
-    line = st.number_input("Line", value=21.50, step=0.5)
+    c4, c5, c6 = st.columns([1, 1, 1])
+    with c4:
+        if sport == "NBA":
+            stat_options = ["PTS", "REB", "AST", "3PM"]
+        elif sport == "NFL":
+            stat_options = ["Passing Yards", "Passing TDs", "Receptions", "Receiving Yards", "Rushing Yards"]
+        else:
+            stat_options = ["Strikeouts", "Hits", "Total Bases"]
+        stat_category = st.selectbox("Stat Category", stat_options)
 
-# Odds & Model Configuration Grid
-col_over, col_under, col_source, col_custom = st.columns([1, 1, 1.5, 1.5])
+    with c5:
+        line_val = st.number_input("Line", value=float(st.session_state["line"]), step=0.5)
+    with c6:
+        projection_source = st.selectbox("Projection Source", ["Model (EWMA mean)", "My mean", "My median"])
 
-with col_over:
-    over_odds = st.number_input("Over Odds (American)", value=-114)
+    c7, c8, c9 = st.columns([1, 1, 1])
+    with c7:
+        over_odds_val = st.number_input("Over Odds (American)", value=int(st.session_state["over_odds"]), step=1)
+    with c8:
+        under_odds_val = st.number_input("Under Odds (American)", value=int(st.session_state["under_odds"]), step=1)
+    with c9:
+        st.write("")
+        st.write("")
+        if st.button("⚡ Fetch DraftKings Line", use_container_width=True):
+            with st.spinner(f"Fetching live line for {player_name}..."):
+                l_line, l_over, l_under, err = fetch_player_prop_line(
+                    sport=sport, player_name=player_name, stat_category=stat_category
+                )
+                if err:
+                    st.error(err)
+                else:
+                    st.session_state["line"] = float(l_line)
+                    st.session_state["over_odds"] = int(l_over)
+                    st.session_state["under_odds"] = int(l_under)
+                    st.success(f"Updated: {l_line} | Over {l_over} | Under {l_under}")
+                    st.rerun()
 
-with col_under:
-    under_odds = st.number_input("Under Odds (American)", value=-112)
+# Advanced Settings Collapsible
+with st.expander("⚙️ Advanced Model Settings"):
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        ewma_decay = st.slider("EWMA Decay Factor", 0.5, 0.99, 0.8, 0.01)
+    with ac2:
+        max_recent_games = st.slider("Max Recent Games Sample", 3, 20, 10, 1)
 
-with col_source:
-    projection_source = st.selectbox("Projection Source", ["Model (EWMA mean)", "My mean", "My median"])
+# 6. Run Evaluation Engine
+res = evaluate_prop_multisport(
+    league=sport,
+    player_name=player_name,
+    stat_category=stat_category,
+    line=line_val,
+    over_odds=over_odds_val,
+    under_odds=under_odds_val,
+    projection_source=projection_source,
+    ewma_decay=ewma_decay,
+    max_recent_games=max_recent_games,
+)
 
-with col_custom:
-    custom_val = st.number_input(
-        "Custom Mean/Median Value",
-        value=22.50,
-        disabled=(projection_source == "Model (EWMA mean)")
-    )
-
-# Advanced Model Settings Expander
-with st.expander("⚙️ Advanced Model Settings", expanded=False):
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        ewma_decay = st.slider("EWMA Decay (Lower = More Recent)", 0.1, 1.0, 0.80)
-    with col_b:
-        max_recent_games = st.slider("Max Recent Games", 1, 30, 10)
-    with col_c:
-        matchup_multiplier = st.slider("Matchup Multiplier", 0.5, 1.5, 1.0)
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# EVALUATION & MONTE CARLO SIMULATION ENGINE
-# ---------------------------------------------------------------------------
-with st.spinner("Evaluating prop markets..."):
-    result = evaluate_prop_multisport(
-        league=sport,
-        player_name=player_name,
-        stat_category=stat_category,
-        line=line,
-        over_odds=over_odds,
-        under_odds=under_odds,
-        projection_source=projection_source,
-        custom_val=custom_val,
-        ewma_decay=ewma_decay,
-        max_recent_games=max_recent_games,
-        matchup_multiplier=matchup_multiplier,
-    )
-
-if "error" in result:
-    st.error(result["error"])
+if "error" in res:
+    st.error(res["error"])
 else:
-    # Title Header
-    st.subheader(f"{result['player_name']} | {stat_category} | {sport}")
+    st.markdown(f"## {res['player_name']} | {stat_category} | {sport}")
 
-    # Top Key Metrics Row
+    # Metrics Display Cards
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Projection (Mean)", f"{result['projection_mean']:.2f}")
-    m2.metric("Projection (Median)", f"{result['projection_median']:.2f}")
-    m3.metric("Best Side", result["best_side"])
-    m4.metric("Fair Odds", f"{result['fair_odds']:+d}" if isinstance(result['fair_odds'], int) else str(result['fair_odds']))
-    m5.metric("Edge vs Market", f"{result['edge_vs_market']:+.1f}%")
-    m6.metric("Expected Value (EV)", f"{result['ev_pct']:+.1f}%")
+    with m1:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">PROJECTION (MEAN)</div><div class="metric-value">{res["projection_mean"]:.2f}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m2:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">PROJECTION (MEDIAN)</div><div class="metric-value">{res["projection_median"]:.2f}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m3:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">BEST SIDE</div><div class="metric-value">{res["best_side"]}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m4:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">FAIR ODDS</div><div class="metric-value">{res["fair_odds"]}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m5:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">EDGE VS MARKET</div><div class="metric-value-green">+{res["edge_vs_market"]:.1f}%</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m6:
+        st.markdown(
+            f'<div class="metric-box"><div class="metric-label">EXPECTED VALUE</div><div class="metric-value-green">+{res["ev_pct"]:.1f}%</div></div>',
+            unsafe_allow_html=True,
+        )
 
-    # Kelly Stake Highlight Box
-    st.markdown(
-        f"""
-        <div class="vision-card" style="margin-top: 15px;">
-            <span style="color:#A0AEC0; font-size:0.85rem; text-transform:uppercase;">Recommended Kelly Stake</span>
-            <h2 style="color:#0075FF; margin:0; font-weight:700;">${result.get('kelly_stake_dollars', 0.53):.2f} <span style="font-size:1rem; color:#A0AEC0;">({result.get('kelly_pct', 0.05):.2f}% of bankroll)</span></h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Detailed Probabilities Table
+    st.markdown("---")
     st.markdown("### Market & Model Probability Breakdown")
-    df_breakdown = pd.DataFrame([
-        {
-            "Side": "Over",
-            "Win %": f"{result['over_win_pct']:.1f}%",
-            "Model %": f"{result['over_model_pct']:.1f}%",
-            "Market %": f"{result['over_market_pct']:.1f}%",
-            "Fair Odds": result['over_fair_odds'],
-            "Book Odds": over_odds,
-            "Edge %": f"{result['over_edge']:.1f}%",
-            "EV %": f"{result['over_ev']:.1f}%"
-        },
-        {
-            "Side": "Under",
-            "Win %": f"{result['under_win_pct']:.1f}%",
-            "Model %": f"{result['under_model_pct']:.1f}%",
-            "Market %": f"{result['under_market_pct']:.1f}%",
-            "Fair Odds": result['under_fair_odds'],
-            "Book Odds": under_odds,
-            "Edge %": f"{result['under_edge']:.1f}%",
-            "EV %": f"{result['under_ev']:.1f}%"
-        }
-    ])
-    st.dataframe(df_breakdown, use_container_width=True, hide_index=True)
 
-    # ---------------------------------------------------------------------------
-    # Plotly Visualizations (Vision UI Glass Charts)
-    # ---------------------------------------------------------------------------
-    chart_col1, chart_col2 = st.columns(2)
+    pb1, pb2 = st.columns(2)
+    with pb1:
+        st.markdown("**Over Probability Comparison**")
+        st.progress(int(res["over_win_pct"]))
+        st.caption(f"Model: {res['over_model_pct']:.1f}% | Implied Market: {res['over_market_pct']:.1f}%")
 
-    with chart_col1:
-        st.markdown("#### Simulated Distribution")
-        sim_data = result.get("simulations", np.random.normal(result['projection_mean'], 4.0, 10000))
-        counts, bins = np.histogram(sim_data, bins=35)
-        bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        
-        colors = ['#00E676' if val >= line else '#FF5252' for val in bin_centers]
-        
-        fig_dist = go.Figure(data=[
-            go.Bar(x=bin_centers, y=counts / len(sim_data), marker_color=colors, opacity=0.85)
-        ])
-        fig_dist.add_vline(x=line, line_dash="dash", line_color="#FFFFFF", annotation_text=f"Line {line}")
-        fig_dist.update_layout(
-            paper_bgcolor='rgba(15, 21, 53, 0.65)',
-            plot_bgcolor='rgba(0, 0, 0, 0)',
-            font=dict(color='#A0AEC0'),
-            xaxis=dict(title=stat_category, gridcolor='rgba(255, 255, 255, 0.05)'),
-            yaxis=dict(title="Probability", gridcolor='rgba(255, 255, 255, 0.05)'),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        st.plotly_chart(fig_dist, use_container_width=True)
-
-    with chart_col2:
-        st.markdown(f"#### Recent {stat_category}")
-        recent_stats = result.get("recent_games", [20, 22, 18, 22, 22, 30])
-        game_labels = [f"W{i+1}" for i in range(len(recent_stats))]
-        bar_colors = ['#00E676' if val >= line else '#FF5252' for val in recent_stats]
-
-        fig_bar = go.Figure(data=[
-            go.Bar(x=game_labels, y=recent_stats, marker_color=bar_colors, opacity=0.85)
-        ])
-        fig_bar.add_hline(y=line, line_dash="dash", line_color="#FFFFFF")
-        fig_bar.update_layout(
-            paper_bgcolor='rgba(15, 21, 53, 0.65)',
-            plot_bgcolor='rgba(0, 0, 0, 0)',
-            font=dict(color='#A0AEC0'),
-            xaxis=dict(title="Game", gridcolor='rgba(255, 255, 255, 0.05)'),
-            yaxis=dict(title=stat_category, gridcolor='rgba(255, 255, 255, 0.05)'),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+    with pb2:
+        st.markdown("**Under Probability Comparison**")
+        st.progress(int(res["under_win_pct"]))
+        st.caption(f"Model: {res['under_model_pct']:.1f}% | Implied Market: {res['under_market_pct']:.1f}%")
