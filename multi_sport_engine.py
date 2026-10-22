@@ -1,9 +1,7 @@
 import datetime
 import numpy as np
 import pandas as pd
-from nba_api.stats.endpoints import playergamelog
-from nba_api.stats.static import players as nba_players
-
+from sports_data import fetch_nba_player_logs
 def american_to_implied_prob(american_odds):
     try:
         odds = float(american_odds)
@@ -15,6 +13,11 @@ def american_to_implied_prob(american_odds):
         return 52.4
 
 def get_nba_logs(player_name, season="2025-26"):
+    """Fetch NBA game logs via ESPN in sports_data."""
+    df, err = fetch_nba_player_logs(player_name)
+    if err:
+        return None, err
+    return df, None
     clean_name = player_name.strip().lower()
     all_players = nba_players.get_players()
     match = [p for p in all_players if clean_name in p['full_name'].lower()]
@@ -86,7 +89,7 @@ def evaluate_multi_sport_prop(league, player_name, stat_category, line, odds=-11
     if league == "NBA":
         df, err = get_nba_logs(player_name)
         if err: return {"error": err}
-        stat_map = {"PTS": "PTS", "REB": "REB", "AST": "AST", "3PM": "FG3M"}
+        stat_map = {"PTS": "PTS", "REB": "REB", "AST": "AST", "3PM": "3PM"}
         if stat_category not in stat_map: return {"error": f"Stat '{stat_category}' not supported for NBA."}
         stats = df[stat_map[stat_category]].astype(float).values
         labels = df['MATCHUP'].values if 'MATCHUP' in df.columns else [f"Game {i+1}" for i in range(len(stats))]
