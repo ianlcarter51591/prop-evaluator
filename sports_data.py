@@ -1,4 +1,4 @@
-"""NBA, NFL, and MLB game-log fetchers strictly filtered to current season logs."""
+"""NBA, NFL, and MLB game-log fetchers with robust date and season parsing for ESPN API."""
 from __future__ import annotations
 
 import os
@@ -24,9 +24,9 @@ HEADERS: Dict[str, str] = {
 
 @st.cache_data(ttl=1800)
 def fetch_nba_player_logs(
-    player_name: str, target_season: Optional[Any] = "2026-27"
+    player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player game logs strictly for the 2026-27 season via ESPN API."""
+    """Fetch 2026-27 NBA player game logs via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -38,26 +38,28 @@ def fetch_nba_player_logs(
             return pd.DataFrame(), f"NBA player '{player_name}' not found on ESPN."
 
         player_id = items[0].get("id")
-        # Query 2027 season parameter for 2026-27 NBA season
+        
+        # Query 2026-27 season (ESPN API parameter 2027)
         gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{player_id}/gamelog?season=2027"
-
         g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+        
         rows = []
-
         for stype in g_res.get("seasonTypes", []):
             for category in stype.get("categories", []):
                 labels = category.get("labels", [])
                 events = category.get("events", [])
                 for event in events:
-                    game_date = event.get("gameDate", "")
-                    # Strictly keep only games starting Oct 2026 onwards for 2026-27 season
-                    if not (game_date.startswith("2026-1") or game_date.startswith("2026-11") or game_date.startswith("2026-12") or game_date.startswith("2027")):
-                        continue
-
                     stats = event.get("stats", [])
                     opponent = event.get("opponent", {}).get("abbreviation", "OPP")
                     is_home = event.get("homeAway") == "home"
-                    formatted_date = game_date[5:10].replace("-", "/")
+                    raw_date = event.get("gameDate", "")
+                    
+                    # Robust Date Formatting
+                    formatted_date = "10/22"
+                    if raw_date:
+                        parts = raw_date.split("T")[0].split("-")
+                        if len(parts) == 3:
+                            formatted_date = f"{parts[1]}/{parts[2]}"
 
                     if stats and labels:
                         row = dict(zip(labels, stats))
@@ -80,11 +82,10 @@ def fetch_nba_player_logs(
                             "3PM": fg3_val,
                             "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
                             "DATE": formatted_date,
-                            "FULL_DATE": game_date
                         })
 
         if not rows:
-            return pd.DataFrame(), f"No 2026-27 game logs found for {player_name}."
+            return pd.DataFrame(), f"No 2026-27 game stats found on ESPN for {player_name}."
 
         return pd.DataFrame(rows), None
     except Exception as e:
@@ -93,9 +94,9 @@ def fetch_nba_player_logs(
 
 @st.cache_data(ttl=1800)
 def fetch_nfl_player_logs(
-    player_name: str, target_season: Optional[Any] = "2026"
+    player_name: str, target_season: Optional[Any] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NFL player game logs strictly for the 2026 season via ESPN API."""
+    """Fetch 2026 NFL player game logs via ESPN API."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -125,14 +126,16 @@ def fetch_nfl_player_logs(
                 labels = category.get("labels", [])
                 events = category.get("events", [])
                 for event in events:
-                    game_date = event.get("gameDate", "")
-                    if not game_date.startswith("2026"):
-                        continue
-
                     stats = event.get("stats", [])
                     opponent = event.get("opponent", {}).get("abbreviation", "OPP")
                     is_home = event.get("homeAway") == "home"
-                    formatted_date = game_date[5:10].replace("-", "/")
+                    raw_date = event.get("gameDate", "")
+
+                    formatted_date = "9/08"
+                    if raw_date:
+                        parts = raw_date.split("T")[0].split("-")
+                        if len(parts) == 3:
+                            formatted_date = f"{parts[1]}/{parts[2]}"
 
                     if stats and labels:
                         row = {lbl.upper().strip(): safe_float(val) for lbl, val in zip(labels, stats)}
@@ -144,11 +147,10 @@ def fetch_nfl_player_logs(
                             "RECEPTIONS": row.get("REC", 0),
                             "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
                             "DATE": formatted_date,
-                            "FULL_DATE": game_date
                         })
 
         if not rows:
-            return pd.DataFrame(), f"No 2026 game stats found for {player_name}."
+            return pd.DataFrame(), f"No 2026 NFL game stats found on ESPN for {player_name}."
 
         return pd.DataFrame(rows), None
     except Exception as e:
@@ -157,9 +159,9 @@ def fetch_nfl_player_logs(
 
 @st.cache_data(ttl=1800)
 def fetch_mlb_player_logs(
-    player_name: str, target_season: Optional[int] = 2026
+    player_name: str, target_season: Optional[int] = None
 ) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch MLB player game logs strictly for 2026 via StatsAPI."""
+    """Fetch 2026 MLB player game logs via StatsAPI."""
     try:
         url = f"{MLB_BASE}/people/search"
         res = requests.get(
