@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Strict Current Season Logs."""
+"""Vision UI Sports Prop Evaluator with Live Game Log Dashboard."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -122,11 +122,11 @@ st.markdown(
 
 # 3. Session State Initialization
 if "line" not in st.session_state:
-    st.session_state["line"] = 25.50
+    st.session_state["line"] = 249.50
 if "over_odds" not in st.session_state:
-    st.session_state["over_odds"] = -113
+    st.session_state["over_odds"] = -114
 if "under_odds" not in st.session_state:
-    st.session_state["under_odds"] = -113
+    st.session_state["under_odds"] = -112
 
 # 4. App Header
 st.markdown(
@@ -145,9 +145,9 @@ with st.container():
     with c1:
         sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
     with c2:
-        player_name = st.text_input("Player", value="Tyrese Maxey" if sport == "NBA" else "Drake Maye")
+        player_name = st.text_input("Player", value="Drake Maye" if sport == "NFL" else "Jayson Tatum")
     with c3:
-        season = st.text_input("Season", value="2026-27" if sport == "NBA" else "2026")
+        season = st.text_input("Season", value="2026" if sport == "NFL" else "2026-27")
 
     c4, c5, c6 = st.columns([1, 1, 1])
     with c4:
@@ -248,7 +248,7 @@ else:
     st.markdown("---")
 
     # 7. GAME LOG BAR CHART (Plotly)
-    st.markdown("### 📊 Current Season Game Log Performance")
+    st.markdown("### 📊 Game Log Performance")
     
     gamelog_data = res.get("gamelog_details", [])
     if gamelog_data:
