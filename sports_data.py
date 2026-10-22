@@ -1,4 +1,4 @@
-"""NBA and MLB game-log fetchers that return a common schema for the props app."""
+"""NBA, NFL, and MLB game-log fetchers that return a common schema for the props app."""
 from __future__ import annotations
 
 import os
@@ -38,7 +38,6 @@ def _fetch_bdl_nba_logs(
     bdl_headers = {"Authorization": BDL_API_KEY}
 
     try:
-        # 1. Search Player
         search_res = requests.get(
             f"{BDL_BASE}/players?search={requests.utils.quote(player_name)}",
             headers=bdl_headers,
@@ -51,14 +50,12 @@ def _fetch_bdl_nba_logs(
 
         player_id = players[0]["id"]
 
-        # Parse season year (e.g., '2025-26' -> 2025)
         season_year = 2025
         if target_season:
             s_str = str(target_season).split("-")[0].strip()
             if s_str.isdigit():
                 season_year = int(s_str)
 
-        # 2. Fetch Player Game Stats
         stats_url = f"{BDL_BASE}/stats?player_ids[]={player_id}&seasons[]={season_year}&per_page=100"
         stats_res = requests.get(
             stats_url, headers=bdl_headers, timeout=TIMEOUT
@@ -66,7 +63,6 @@ def _fetch_bdl_nba_logs(
 
         data = stats_res.get("data", [])
         if not data:
-            # Fallback check for prior season
             fallback_url = f"{BDL_BASE}/stats?player_ids[]={player_id}&seasons[]={season_year - 1}&per_page=100"
             stats_res = requests.get(
                 fallback_url, headers=bdl_headers, timeout=TIMEOUT
@@ -99,7 +95,7 @@ def _fetch_bdl_nba_logs(
 
 
 # ---------------------------------------------------------------------------
-# ESPN Public API Fallback Fetcher
+# ESPN Public API NBA Fetcher
 # ---------------------------------------------------------------------------
 
 
@@ -176,7 +172,7 @@ def _fetch_espn_nba_logs(
 
 
 # ---------------------------------------------------------------------------
-# Primary Unified Fetcher Function
+# Primary Unified NBA Fetcher
 # ---------------------------------------------------------------------------
 
 
@@ -190,8 +186,68 @@ def fetch_nba_player_logs(
         if not err and not df.empty:
             return df, None
 
-    # Fallback to ESPN if BDL is unconfigured or returns an error
     return _fetch_espn_nba_logs(player_name, target_season)
+
+
+# ---------------------------------------------------------------------------
+# ESPN Public API NFL Fetcher
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=3600)
+def fetch_nfl_player_logs(
+    player_name: str, target_season: Optional[Any] = None
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch NFL player game logs via ESPN API."""
+    try:
+        search_url = (
+            "https://site.web.api.espn.com/apis/common/v3/search"
+            f"?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=football&league=nfl"
+        )
+        res = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT).json()
+        items = res.get("items", [])
+        if not items:
+            return pd.DataFrame(), f"NFL player '{player_name}' not found on ESPN."
+
+        player_id = items[0].get("id")
+        gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{player_id}/gamelog"
+
+        g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+        rows = []
+
+        for stype in g_res.get("seasonTypes", []):
+            for category in stype.get("categories", []):
+                labels = category.get("labels", [])
+                events = category.get("events", [])
+                for event in events:
+                    stats = event.get("stats", [])
+                    if stats and labels and len(stats) == len(labels):
+                        row = dict(zip(labels, stats))
+
+                        def safe_float(v):
+                            try:
+                                return float(v) if str(v).strip() != "-" else 0.0
+                            except (ValueError, TypeError):
+                                return 0.0
+
+                        row["PASS_YDS"] = safe_float(row.get("YDS", row.get("PASS YDS", 0)))
+                        row["PASS_TDS"] = safe_float(row.get("TD", row.get("PASS TD", 0)))
+                        row["RUSH_YDS"] = safe_float(row.get("YDS", row.get("RUSH YDS", 0)))
+                        row["REC_YDS"] = safe_float(row.get("YDS", row.get("REC YDS", 0)))
+                        row["RECEPTIONS"] = safe_float(row.get("REC", 0))
+                        rows.append(row)
+
+        if not rows:
+            return pd.DataFrame(), f"No game logs found for {player_name}."
+
+        return pd.DataFrame(rows), None
+    except Exception as e:
+        return pd.DataFrame(), f"NFL fetch failed: {e}"
+
+
+# ---------------------------------------------------------------------------
+# MLB Fetcher
+# ---------------------------------------------------------------------------
 
 
 @st.cache_data(ttl=3600)
