@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Powder Blue Text and Grey Boxes."""
+"""Vision UI Sports Prop Evaluator with Darkened Chart Text."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -246,8 +246,29 @@ else:
             fig.add_trace(go.Bar(
                 x=df_chart["x_label"], y=df_chart["stat_value"],
                 text=[f"{v:.1f}" if v % 1 != 0 else f"{int(v)}" for v in df_chart["stat_value"]],
-                textposition="outside", marker_color=colors, hovertext=df_chart["opponent"], hoverinfo="text+y"
+                textposition="outside",
+                textfont=dict(color="#0f172a", size=12, family="sans-serif"),
+                marker_color=colors,
+                hovertext=df_chart["opponent"],
+                hoverinfo="text+y"
             ))
-            fig.add_shape(type="line", x0=-0.5, x1=len(df_chart) - 0.5, y0=line_val, y1=line_val, line=dict(color="#38bdf8", width=2, dash="dash"))
-            fig.update_layout(plot_bgcolor="#ffffff", paper_bgcolor="#ffffff", margin=dict(l=20, r=20, t=30, b=50), height=360)
+            fig.add_shape(type="line", x0=-0.5, x1=len(df_chart) - 0.5, y0=line_val, y1=line_val, line=dict(color="#2563eb", width=2, dash="dash"))
+            
+            fig.update_layout(
+                plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                margin=dict(l=20, r=20, t=30, b=50),
+                height=360,
+                xaxis=dict(
+                    showgrid=False,
+                    title=dict(text="Date & Opponent", font=dict(color="#0f172a", size=13)),
+                    tickfont=dict(color="#0f172a", size=11, family="sans-serif")
+                ),
+                yaxis=dict(
+                    showgrid=True,
+                    gridcolor="#e2e8f0",
+                    title=dict(text=f"{stat_category}", font=dict(color="#0f172a", size=13)),
+                    tickfont=dict(color="#0f172a", size=11, family="sans-serif")
+                ),
+            )
             st.plotly_chart(fig, use_container_width=True)
