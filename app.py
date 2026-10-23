@@ -1,4 +1,4 @@
-"""NFL Prop Evaluator Dashboard with Synchronized Live Game Logs."""
+"""NFL Prop Evaluator Dashboard with Restored Pass Attempts and Completions."""
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,7 +13,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Dark Theme + Powder Blue Text (#b9e6ff) + Slate Gray Cards (#1e293b / #334155)
 st.markdown(
     """
     <style>
@@ -131,7 +130,6 @@ st.markdown(
 with st.container():
     c1, c2, c3 = st.columns([1, 2, 1])
     with c1:
-        sport = "NFL"
         st.markdown("**Sport:** 🏈 NFL")
     with c2:
         player_name = st.text_input("Player Name", value="Aaron Rodgers")
@@ -142,6 +140,8 @@ with st.container():
     with c4:
         stat_options = [
             "Passing Yards",
+            "Pass Completions",
+            "Pass Attempts",
             "Passing TDs",
             "Rushing Yards",
             "Rushing Attempts",
