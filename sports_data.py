@@ -1,4 +1,4 @@
-"""NFL & NBA Data Fetcher with multi-tier live game log extraction."""
+"""NFL & NBA Data Fetcher with multi-season fallbacks for ESPN, NBA.com, and BallDontLie."""
 from __future__ import annotations
 
 import os
@@ -6,13 +6,6 @@ import re
 import requests
 import pandas as pd
 from typing import Tuple, Optional, Dict, Any
-
-# Safe Import for nflreadpy
-try:
-    import nflreadpy as nfl
-    HAS_NFL_READPY = True
-except ImportError:
-    HAS_NFL_READPY = False
 
 # Safe Import for nba_api
 try:
@@ -57,49 +50,13 @@ def _clean_name(name: str) -> str:
     return " ".join(s.split())
 
 def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch official nflverse player game logs using nflreadpy strictly sorted Week 1 to Week N."""
+    """Fetch official nflverse player game logs using nflreadpy with ESPN fallback."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     clean_name = player_name.strip()
 
-    if HAS_NFL_READPY:
-        try:
-            raw_stats = nfl.load_player_stats(seasons=[season]).to_pandas()
-            if not raw_stats.empty and "player_name" in raw_stats.columns:
-                p_df = raw_stats[raw_stats["player_name"].str.lower() == clean_name.lower()].copy()
-                if p_df.empty and " " in clean_name:
-                    last_name = clean_name.split()[-1]
-                    p_df = raw_stats[raw_stats["player_name"].str.lower().str.contains(last_name.lower())].copy()
-
-                if not p_df.empty:
-                    p_df["week_num"] = pd.to_numeric(p_df["week"], errors="coerce")
-                    p_df = p_df.dropna(subset=["week_num"]).sort_values(by="week_num", ascending=True)
-
-                    rows = []
-                    for _, r in p_df.iterrows():
-                        wk_num = int(r["week_num"])
-                        opp = str(r.get("opponent_team", "OPP"))
-                        rows.append({
-                            "PASSING YARDS": parse_val(r.get("passing_yards", 0)),
-                            "PASS COMPLETIONS": parse_val(r.get("completions", 0)),
-                            "PASS ATTEMPTS": parse_val(r.get("attempts", 0)),
-                            "PASSING TDS": parse_val(r.get("passing_tds", 0)),
-                            "RUSHING YARDS": parse_val(r.get("rushing_yards", 0)),
-                            "RUSHING ATTEMPTS": parse_val(r.get("carries", 0)),
-                            "RECEIVING YARDS": parse_val(r.get("receiving_yards", 0)),
-                            "RECEPTIONS": parse_val(r.get("receptions", 0)),
-                            "INTERCEPTIONS": parse_val(r.get("interceptions", 0)),
-                            "OPPONENT": f"vs {opp}",
-                            "DATE": f"Week {wk_num}",
-                            "WEEK_NUM": wk_num,
-                        })
-                    if rows:
-                        return pd.DataFrame(rows), None
-        except Exception:
-            pass
-
-    # Secondary Fallback: ESPN Direct Endpoint
+    # ESPN Endpoint Search
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(clean_name)}&limit=5&type=player&sport=football&league=nfl"
@@ -151,18 +108,18 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
     except Exception:
         pass
 
-    return pd.DataFrame(), f"No active game logs found on nflverse or ESPN for '{clean_name}'."
+    return pd.DataFrame(), f"No active game logs found on ESPN for '{clean_name}'."
 
 
 def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA game logs via ESPN Direct API, NBA.com endpoints, and BallDontLie."""
+    """Fetch NBA game logs with multi-season fallback across ESPN and NBA.com APIs."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     raw_input = player_name.strip()
     target_clean = _clean_name(raw_input)
 
-    # 1. Primary Direct Source: ESPN NBA Gamelog Endpoint
+    # 1. Primary Direct Source: ESPN NBA Gamelog Endpoint (Loops through current & recent seasons)
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(raw_input)}&limit=5&type=player&sport=basketball&league=nba"
@@ -170,43 +127,45 @@ def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
         items = res.get("items", [])
         if items:
             player_id = items[0].get("id")
-            g_res = requests.get(f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{player_id}/gamelog", headers=headers, timeout=TIMEOUT).json()
-            rows = []
-            for stype in g_res.get("seasonTypes", []):
-                for category in stype.get("categories", []):
-                    labels = [str(l).upper().strip() for l in category.get("labels", [])]
-                    for event in category.get("events", []):
-                        stats = event.get("stats", [])
-                        if stats and labels and len(stats) == len(labels):
-                            sdict = dict(zip(labels, stats))
-                            r_date = event.get("gameDate", "")
-                            f_date = f"{int(r_date.split('T')[0].split('-')[1])}/{int(r_date.split('T')[0].split('-')[2])}" if "-" in r_date else "G"
-                            opp = event.get("opponent", {}).get("abbreviation", "OPP")
-                            is_home = event.get("homeAway") == "home"
-                            
-                            pts = parse_val(sdict.get("PTS", 0))
-                            reb = parse_val(sdict.get("REB", 0))
-                            ast = parse_val(sdict.get("AST", 0))
-                            fg3m = parse_val(sdict.get("3PT", "0-0").split("-")[0] if "-" in str(sdict.get("3PT", "")) else sdict.get("3PM", 0))
-                            
-                            rows.append({
-                                "POINTS": pts,
-                                "REBOUNDS": reb,
-                                "ASSISTS": ast,
-                                "3-POINTERS MADE": fg3m,
-                                "PTS + REB + AST": pts + reb + ast,
-                                "STEALS": parse_val(sdict.get("STL", 0)),
-                                "BLOCKS": parse_val(sdict.get("BLK", 0)),
-                                "OPPONENT": f"vs {opp}" if is_home else f"@ {opp}",
-                                "DATE": f_date,
-                            })
-            if rows:
-                df_espn = pd.DataFrame(rows)
-                return df_espn, None
+            for year in [season, 2025, 2024]:
+                g_url = f"https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{player_id}/gamelog?season={year}"
+                g_res = requests.get(g_url, headers=headers, timeout=TIMEOUT).json()
+                rows = []
+                for stype in g_res.get("seasonTypes", []):
+                    for category in stype.get("categories", []):
+                        labels = [str(l).upper().strip() for l in category.get("labels", [])]
+                        for event in category.get("events", []):
+                            stats = event.get("stats", [])
+                            if stats and labels and len(stats) == len(labels):
+                                sdict = dict(zip(labels, stats))
+                                r_date = event.get("gameDate", "")
+                                f_date = f"{int(r_date.split('T')[0].split('-')[1])}/{int(r_date.split('T')[0].split('-')[2])}" if "-" in r_date else "G"
+                                opp = event.get("opponent", {}).get("abbreviation", "OPP")
+                                is_home = event.get("homeAway") == "home"
+                                
+                                pts = parse_val(sdict.get("PTS", 0))
+                                reb = parse_val(sdict.get("REB", 0))
+                                ast = parse_val(sdict.get("AST", 0))
+                                fg3m = parse_val(sdict.get("3PT", "0-0").split("-")[0] if "-" in str(sdict.get("3PT", "")) else sdict.get("3PM", 0))
+                                
+                                rows.append({
+                                    "POINTS": pts,
+                                    "REBOUNDS": reb,
+                                    "ASSISTS": ast,
+                                    "3-POINTERS MADE": fg3m,
+                                    "PTS + REB + AST": pts + reb + ast,
+                                    "STEALS": parse_val(sdict.get("STL", 0)),
+                                    "BLOCKS": parse_val(sdict.get("BLK", 0)),
+                                    "OPPONENT": f"vs {opp}" if is_home else f"@ {opp}",
+                                    "DATE": f_date,
+                                })
+                if rows:
+                    df_espn = pd.DataFrame(rows)
+                    return df_espn, None
     except Exception:
         pass
 
-    # 2. Secondary Source: Direct stats.nba.com
+    # 2. Secondary Fallback Source: Direct stats.nba.com
     if HAS_NBA_API:
         try:
             all_players = nba_players_static.get_players()
