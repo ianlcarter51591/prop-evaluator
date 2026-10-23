@@ -1,4 +1,4 @@
-"""NFL Stat Evaluator and Monte Carlo Engine with exact category filtering."""
+"""NFL Stat Evaluator and Monte Carlo Engine using BallDontLie Data."""
 import numpy as np
 import pandas as pd
 from sports_data import fetch_nfl_player_logs
@@ -38,7 +38,7 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate NFL prop with exact stat column isolation."""
+    """Evaluate NFL prop with clean category isolation from BallDontLie."""
     try:
         df, err = fetch_nfl_player_logs(player_name)
         if err or df is None or df.empty:
@@ -50,7 +50,7 @@ def evaluate_prop_multisport(
         if target_col not in df.columns:
             return {"error": f"Stat category '{stat_category}' not found in logs for '{player_name}'."}
 
-        # Filter out 0.0 rows if stat category has non-zero values available
+        # Filter out zero entries if non-zero entries exist
         non_zero_df = df[df[target_col] > 0]
         working_df = non_zero_df if not non_zero_df.empty else df
 
