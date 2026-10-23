@@ -1,4 +1,4 @@
-"""Prop Evaluator: Live DraftKings Lines & Monte Carlo Engine (Powder Blue Theme)."""
+"""Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
 import os
 from typing import Any, Dict, Tuple
 
@@ -32,7 +32,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Powder Blue UI Styling
+# High-Contrast Powder Blue UI Styling
 st.markdown(
     """
     <style>
@@ -46,7 +46,7 @@ st.markdown(
         display: none !important;
     }
 
-    /* All Container Boxes, Cards & Expanders Changed to Powder Blue */
+    /* Powder Blue Container Boxes, Cards & Expanders */
     .vision-card, 
     [data-testid="stVerticalBlockBorderWrapper"], 
     [data-testid="stExpander"], 
@@ -123,7 +123,7 @@ st.markdown(
         font-weight: 700 !important;
     }
 
-    /* Input Fields & Dropdowns (Dark Navy Fill with Bright White Text inside Powder Blue Containers) */
+    /* Input Fields & Dropdowns */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #0f172a !important;
         color: #ffffff !important;
@@ -182,14 +182,24 @@ def _secret(name: str) -> str:
         pass
     return os.environ.get(name, "").strip()
 
-def load_offer_into_model(sport: str, stat_category: str, player: str, line: float, over: float, under: float) -> None:
-    """Callback to auto-populate all input parameters (including stat category) and run evaluation."""
+def sync_populate_to_widgets(sport: str, stat_category: str, player: str, line: float, over: float, under: float) -> None:
+    """Directly update form widget state keys so inputs immediately reflect populated data."""
     ss = st.session_state
+    
+    # 1. Update general values
     ss[f"player_{sport}"] = player
     ss[f"stat_{sport}"] = stat_category
     ss[f"line_{sport}"] = float(line)
     ss[f"over_{sport}"] = int(round(over))
     ss[f"under_{sport}"] = int(round(under))
+    
+    # 2. Directly update form widget keys
+    ss[f"input_player_{sport}"] = player
+    ss[f"input_stat_{sport}"] = stat_category
+    ss[f"input_line_{sport}"] = float(line)
+    ss[f"input_over_{sport}"] = int(round(over))
+    ss[f"input_under_{sport}"] = int(round(under))
+    
     ss["ran_sport"] = sport
 
 def render_live_panel(sport: str) -> None:
@@ -237,7 +247,7 @@ def render_live_panel(sport: str) -> None:
                     f"⚡ Populate {player_pick} ({row['Line']} | Over {row['Over']} / Under {row['Under']})",
                     key=f"populate_btn_{sport}"
                 ):
-                    load_offer_into_model(sport, live_stat, player_pick, row["Line"], row["Over"], row["Under"])
+                    sync_populate_to_widgets(sport, live_stat, player_pick, row["Line"], row["Over"], row["Under"])
                     st.rerun()
 
 def main() -> None:
@@ -258,20 +268,30 @@ def main() -> None:
     ss = st.session_state
     def_player, def_line = DEFAULTS[sport]
     
+    # Initialize form widget state keys if missing
+    if f"input_player_{sport}" not in ss:
+        ss[f"input_player_{sport}"] = ss.get(f"player_{sport}", def_player)
+    if f"input_stat_{sport}" not in ss:
+        ss[f"input_stat_{sport}"] = ss.get(f"stat_{sport}", stat_options(sport)[0])
+    if f"input_line_{sport}" not in ss:
+        ss[f"input_line_{sport}"] = float(ss.get(f"line_{sport}", def_line))
+    if f"input_over_{sport}" not in ss:
+        ss[f"input_over_{sport}"] = int(ss.get(f"over_{sport}", -110))
+    if f"input_under_{sport}" not in ss:
+        ss[f"input_under_{sport}"] = int(ss.get(f"under_{sport}", -110))
+
     with st.form(f"form_{sport}"):
         c1, c2, c3 = st.columns([2, 1, 1])
-        player_name = c1.text_input("Player Name", value=ss.get(f"player_{sport}", def_player), key=f"input_player_{sport}")
+        player_name = c1.text_input("Player Name", key=f"input_player_{sport}")
         
         available_stats = stat_options(sport)
-        current_stat = ss.get(f"stat_{sport}", available_stats[0])
-        stat_index = available_stats.index(current_stat) if current_stat in available_stats else 0
-        stat_category = c2.selectbox("Stat Category", available_stats, index=stat_index, key=f"input_stat_{sport}")
+        stat_category = c2.selectbox("Stat Category", available_stats, key=f"input_stat_{sport}")
         
-        line_val = c3.number_input("Line", value=float(ss.get(f"line_{sport}", def_line)), step=0.5, key=f"input_line_{sport}")
+        line_val = c3.number_input("Line", step=0.5, key=f"input_line_{sport}")
 
         c4, c5 = st.columns(2)
-        over_odds = c4.number_input("Over Odds", value=int(ss.get(f"over_{sport}", -110)), key=f"input_over_{sport}")
-        under_odds = c5.number_input("Under Odds", value=int(ss.get(f"under_{sport}", -110)), key=f"input_under_{sport}")
+        over_odds = c4.number_input("Over Odds", key=f"input_over_{sport}")
+        under_odds = c5.number_input("Under Odds", key=f"input_under_{sport}")
 
         submitted = st.form_submit_button("⚡ Evaluate Prop")
 
