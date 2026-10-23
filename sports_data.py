@@ -1,143 +1,181 @@
-"""Robust NFL Game Log Fetcher Engine."""
+"""NBA and MLB game-log fetchers that return a common schema for the props app."""
 from __future__ import annotations
 
-import requests
-import pandas as pd
-from typing import Tuple, Optional, Dict, Any
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
+
+MLB_BASE: str = "https://statsapi.mlb.com/api/v1"
+TIMEOUT: int = 10
 HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
 }
-TIMEOUT: int = 8
 
-def parse_val(v) -> float:
-    """Parse numeric strings and split slashes cleanly."""
+
+def mlb_season(today: Optional[date] = None) -> int:
+    """Return the MLB season year (Mar–Dec -> that year, Jan–Feb -> prior year)."""
+    today = today or date.today()
+    return today.year if today.month >= 3 else today.year - 1
+
+
+def nba_season_start(today: Optional[date] = None) -> int:
+    """Return the NBA season start year (Oct–Dec -> that year, else prior year)."""
+    today = today or date.today()
+    return today.year if today.month >= 10 else today.year - 1
+
+
+def nba_season_str(start: int) -> str:
+    """e.g. 2025 -> '2025-26'."""
+    nxt = (start + 1) % 100
+    return f"{start}-{nxt:02d}"
+
+
+# ---------------------------------------------------------------------------
+# NBA Game Logs (Powered by ESPN Public API to avoid Cloud IP Blocking)
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=3600)
+def fetch_nba_player_logs(
+    player_name: str, target_season: Optional[int] = None
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch current-season NBA player game logs strictly, regardless of sample size."""
     try:
-        s = str(v).strip()
-        if not s or s in ["-", "None", "null", "--"]:
-            return 0.0
-        if "/" in s:
-            s = s.split("/")[0].strip()
-        return float(s.replace(",", ""))
-    except (ValueError, TypeError):
-        return 0.0
-
-def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch live NFL game logs from ESPN's athlete endpoint."""
-    if not player_name or not player_name.strip():
-        return pd.DataFrame(), "Please enter a player name."
-
-    clean_name = player_name.strip()
-
-    try:
-        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(clean_name)}&limit=5&type=player&sport=football&league=nfl"
+        # 1. Search for player ID on ESPN
+        search_url = (
+            "https://site.web.api.espn.com/apis/common/v3/search"
+            f"?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=basketball&league=nba"
+        )
         res = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT).json()
+
         items = res.get("items", [])
-        
-        if items:
-            player_id = items[0].get("id")
-            gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{player_id}/gamelog"
-            g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+        if not items:
+            return pd.DataFrame(), f"NBA player '{player_name}' not found on ESPN."
 
-            game_map: Dict[str, Dict[str, Any]] = {}
+        player_id = items[0].get("id")
 
-            for stype in g_res.get("seasonTypes", []):
-                for category in stype.get("categories", []):
-                    cat_name = str(category.get("name", "")).lower().strip()
-                    labels = [str(l).upper().strip() for l in category.get("labels", [])]
-                    events = category.get("events", [])
+        # 2. Fetch athlete gamelog summary for current season
+        gamelog_url = (
+            "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/"
+            f"athletes/{player_id}/gamelog"
+        )
+        g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
 
-                    for event in events:
-                        event_id = str(event.get("eventId", ""))
-                        if not event_id:
-                            continue
+        rows = []
+        season_types = g_res.get("seasonTypes", [])
 
-                        if event_id not in game_map:
-                            opponent = event.get("opponent", {}).get("abbreviation", "OPP")
-                            is_home = event.get("homeAway") == "home"
-                            raw_date = event.get("gameDate", "")
+        # Parse season categories (Regular Season & Postseason)
+        for stype in season_types:
+            for category in stype.get("categories", []):
+                labels = category.get("labels", [])
+                events = category.get("events", [])
+                for event in events:
+                    stats = event.get("stats", [])
+                    if stats and labels and len(stats) == len(labels):
+                        row = dict(zip(labels, stats))
 
-                            formatted_date = "G"
-                            if raw_date and "-" in raw_date:
-                                parts = raw_date.split("T")[0].split("-")
-                                if len(parts) == 3:
-                                    formatted_date = f"{int(parts[1])}/{int(parts[2])}"
+                        def safe_float(val):
+                            try:
+                                return float(val) if str(val).strip() != "-" else 0.0
+                            except (ValueError, TypeError):
+                                return 0.0
 
-                            game_map[event_id] = {
-                                "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
-                                "DATE": formatted_date,
-                                "PASSING YARDS": 0.0,
-                                "PASS COMPLETIONS": 0.0,
-                                "PASS ATTEMPTS": 0.0,
-                                "PASSING TDS": 0.0,
-                                "RUSHING YARDS": 0.0,
-                                "RUSHING ATTEMPTS": 0.0,
-                                "RECEIVING YARDS": 0.0,
-                                "RECEPTIONS": 0.0,
-                                "INTERCEPTIONS": 0.0,
-                            }
+                        row["PTS"] = safe_float(row.get("PTS", 0))
+                        row["REB"] = safe_float(row.get("REB", 0))
+                        row["AST"] = safe_float(row.get("AST", 0))
+                        fg3_str = str(row.get("3PT", "0-0"))
+                        row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
+                        rows.append(row)
 
-                        stats = event.get("stats", [])
-                        if stats and labels and len(stats) == len(labels):
-                            stat_dict = dict(zip(labels, stats))
+        # 3. Direct events parsing fallback for current season
+        if not rows and "events" in g_res:
+            labels = g_res.get("labels", [])
+            for event_id, event_data in g_res.get("events", {}).items():
+                stats = event_data.get("stats", [])
+                if stats and labels and len(stats) == len(labels):
+                    row = dict(zip(labels, stats))
 
-                            if "passing" in cat_name:
-                                if "C/ATT" in stat_dict:
-                                    c_att_str = str(stat_dict["C/ATT"]).strip()
-                                    if "/" in c_att_str:
-                                        c_parts = c_att_str.split("/")
-                                        game_map[event_id]["PASS COMPLETIONS"] = parse_val(c_parts[0])
-                                        game_map[event_id]["PASS ATTEMPTS"] = parse_val(c_parts[1])
+                    def safe_float(val):
+                        try:
+                            return float(val) if str(val).strip() != "-" else 0.0
+                        except (ValueError, TypeError):
+                            return 0.0
 
-                                if "YDS" in stat_dict:
-                                    game_map[event_id]["PASSING YARDS"] = parse_val(stat_dict["YDS"])
-                                game_map[event_id]["PASSING TDS"] = parse_val(stat_dict.get("TD", 0))
-                                game_map[event_id]["INTERCEPTIONS"] = parse_val(stat_dict.get("INT", 0))
+                    row["PTS"] = safe_float(row.get("PTS", 0))
+                    row["REB"] = safe_float(row.get("REB", 0))
+                    row["AST"] = safe_float(row.get("AST", 0))
+                    fg3_str = str(row.get("3PT", "0-0"))
+                    row["3PM"] = safe_float(fg3_str.split("-")[0]) if "-" in fg3_str else safe_float(row.get("3PM", 0))
+                    rows.append(row)
 
-                            elif "rushing" in cat_name:
-                                game_map[event_id]["RUSHING YARDS"] = parse_val(stat_dict.get("YDS", 0))
-                                game_map[event_id]["RUSHING ATTEMPTS"] = parse_val(stat_dict.get("CAR", stat_dict.get("ATT", 0)))
+        if not rows:
+            return pd.DataFrame(), f"No current-season games found for {player_name}."
 
-                            elif "receiving" in cat_name:
-                                game_map[event_id]["RECEIVING YARDS"] = parse_val(stat_dict.get("YDS", 0))
-                                game_map[event_id]["RECEPTIONS"] = parse_val(stat_dict.get("REC", 0))
+        df = pd.DataFrame(rows)
+        return df, None
 
-            rows = list(game_map.values())
-            if rows:
-                return pd.DataFrame(rows), None
+    except Exception as e:
+        return pd.DataFrame(), f"ESPN NBA fetch failed: {e}"
+# ---------------------------------------------------------------------------
+# MLB Game Logs (MLB StatsAPI)
+# ---------------------------------------------------------------------------
 
-    except Exception:
-        pass
 
-    # Seamless player statistical baseline if network or endpoint returns empty
-    seed = sum(ord(c) for c in clean_name.lower())
-    base_pass = 210.0 + (seed % 80)
-    base_comp = 19.0 + (seed % 8)
-    base_att = 31.0 + (seed % 10)
-    base_tds = 1.0 + ((seed % 3) / 1.0)
-    base_rush = 18.0 + (seed % 35)
-    base_rec = 35.0 + (seed % 40)
-    base_receptions = 3.0 + (seed % 5)
+@st.cache_data(ttl=3600)
+def _mlb_search_player(name: str) -> Optional[int]:
+    """Search MLB StatsAPI for a player ID by name."""
+    url = f"{MLB_BASE}/people/search"
+    res = requests.get(url, params={"query": name}, headers=HEADERS, timeout=TIMEOUT)
+    if res.status_code != 200:
+        return None
+    people = res.json().get("people", [])
+    if not people:
+        return None
+    return people[0]["id"]
 
-    mock_dates = ["9/08", "9/15", "9/22", "9/29", "10/06", "10/13"]
-    mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
 
-    rows = []
-    for i in range(6):
-        var = ((i % 3) - 1) * 15.0
-        rows.append({
-            "PASSING YARDS": max(0.0, round(base_pass + (var * 2), 1)),
-            "PASS COMPLETIONS": max(0.0, round(base_comp + (var * 0.2), 0)),
-            "PASS ATTEMPTS": max(0.0, round(base_att + (var * 0.3), 0)),
-            "PASSING TDS": max(0.0, round(base_tds + (1 if i % 2 == 0 else -1), 0)),
-            "RUSHING YARDS": max(0.0, round(base_rush + var, 1)),
-            "RUSHING ATTEMPTS": max(0.0, round(4.0 + (i % 3), 0)),
-            "RECEIVING YARDS": max(0.0, round(base_rec + var, 1)),
-            "RECEPTIONS": max(0.0, round(base_receptions + (1 if i % 2 == 0 else 0), 0)),
-            "INTERCEPTIONS": 1.0 if i % 2 == 0 else 0.0,
-            "OPPONENT": mock_opps[i],
-            "DATE": mock_dates[i],
-        })
+@st.cache_data(ttl=3600)
+def fetch_mlb_player_logs(
+    player_name: str, target_season: Optional[int] = None
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch MLB player game logs for current and prior season."""
+    try:
+        player_id = _mlb_search_player(player_name)
+        if not player_id:
+            return pd.DataFrame(), f"MLB player '{player_name}' not found."
 
-    return pd.DataFrame(rows), None
+        season = target_season or mlb_season()
+        seasons_to_fetch = [season, season - 1]
+        frames = []
+
+        for s in seasons_to_fetch:
+            url = f"{MLB_BASE}/people/{player_id}/stats"
+            params = {
+                "stats": "gameLog",
+                "season": s,
+                "group": "hitting",
+            }
+            res = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+            if res.status_code == 200:
+                splits = res.json().get("stats", [{}])[0].get("splits", [])
+                rows = []
+                for split in splits:
+                    stat = split.get("stat", {})
+                    stat["gameDate"] = split.get("date", "")
+                    rows.append(stat)
+                if rows:
+                    frames.append(pd.DataFrame(rows))
+
+        if not frames:
+            return pd.DataFrame(), f"No MLB game logs found for {player_name}."
+
+        df = pd.concat(frames, ignore_index=True)
+        return df, None
+
+    except Exception as e:
+        return pd.DataFrame(), f"MLB fetch failed: {e}"
