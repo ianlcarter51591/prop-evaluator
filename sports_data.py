@@ -1,4 +1,4 @@
-"""NFL & NBA Game-Log Fetcher integrated with BallDontLie API."""
+"""NFL & NBA Game-Log Fetcher with BallDontLie API token search."""
 from __future__ import annotations
 
 import os
@@ -7,10 +7,8 @@ import pandas as pd
 import streamlit as st
 from typing import Tuple, Optional, Dict, Any
 
-# Retrieve BDL API Key directly from Streamlit Secrets or Environment
 BDL_API_KEY = st.secrets.get("BDL_API_KEY", os.getenv("BDL_API_KEY", ""))
 BDL_BASE_NFL = "https://api.balldontlie.io/nfl/v1"
-BDL_BASE_NBA = "https://api.balldontlie.io/v1"
 TIMEOUT = 10
 
 HEADERS = {
@@ -19,7 +17,7 @@ HEADERS = {
 }
 
 def parse_val(v) -> float:
-    """Safely convert numeric or string values into floats."""
+    """Safely convert numeric string or raw stats to floats."""
     try:
         s = str(v).strip()
         if not s or s in ["-", "None", "null", "--"]:
@@ -29,33 +27,50 @@ def parse_val(v) -> float:
         return 0.0
 
 def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch live NFL game logs using BallDontLie API."""
+    """Fetch live, uncached game logs from BallDontLie for ANY player typed."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     if not BDL_API_KEY:
-        return pd.DataFrame(), "BDL_API_KEY is not found in Streamlit secrets."
+        return pd.DataFrame(), "BDL_API_KEY is missing from Streamlit secrets."
 
     try:
         clean_name = player_name.strip()
-        # 1. Search Player ID
+        name_parts = clean_name.split()
+
+        # 1. Search for Player ID (Try Full Name, then Last Name)
+        search_query = clean_name
         search_url = f"{BDL_BASE_NFL}/players"
-        res = requests.get(search_url, headers=HEADERS, params={"search": clean_name}, timeout=TIMEOUT)
+        res = requests.get(search_url, headers=HEADERS, params={"search": search_query}, timeout=TIMEOUT)
         
         if res.status_code == 401:
             return pd.DataFrame(), "BallDontLie API Key Unauthorized (401). Check Secrets format."
         
         p_data = res.json().get("data", [])
+        
+        # If full name fails, search by last name
+        if not p_data and len(name_parts) > 1:
+            res = requests.get(search_url, headers=HEADERS, params={"search": name_parts[-1]}, timeout=TIMEOUT)
+            p_data = res.json().get("data", [])
+
         if not p_data:
             return pd.DataFrame(), f"NFL player '{player_name}' not found on BallDontLie."
 
-        player_id = p_data[0]["id"]
+        # Find best matching player ID
+        target_player = p_data[0]
+        for p in p_data:
+            full = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower()
+            if full == clean_name.lower():
+                target_player = p
+                break
 
-        # 2. Fetch Player Game Stats
+        player_id = target_player["id"]
+
+        # 2. Fetch Stats for Player
         stats_url = f"{BDL_BASE_NFL}/stats"
         params = {
             "player_ids[]": player_id,
-            "per_page": 15
+            "per_page": 20
         }
         s_res = requests.get(stats_url, headers=HEADERS, params=params, timeout=TIMEOUT).json()
         stats_data = s_res.get("data", [])
