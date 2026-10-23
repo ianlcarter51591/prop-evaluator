@@ -1,4 +1,4 @@
-"""NFL Stat Evaluator and Monte Carlo Simulation Engine with Pass Attempts & Completions."""
+"""NFL Stat Evaluator and Monte Carlo Engine with exact category filtering."""
 import numpy as np
 import pandas as pd
 from sports_data import fetch_nfl_player_logs
@@ -38,7 +38,7 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate NFL prop with exact alignment between mean, median, and game logs."""
+    """Evaluate NFL prop with exact stat column isolation."""
     try:
         df, err = fetch_nfl_player_logs(player_name)
         if err or df is None or df.empty:
@@ -50,15 +50,14 @@ def evaluate_prop_multisport(
         if target_col not in df.columns:
             return {"error": f"Stat category '{stat_category}' not found in logs for '{player_name}'."}
 
-        # Filter out rows where target stat was 0
-        valid_rows = df[df[target_col] > 0]
-        if valid_rows.empty:
-            valid_rows = df
+        # Filter out 0.0 rows if stat category has non-zero values available
+        non_zero_df = df[df[target_col] > 0]
+        working_df = non_zero_df if not non_zero_df.empty else df
 
         stats = []
         gamelog_details = []
 
-        for _, row in valid_rows.iterrows():
+        for _, row in working_df.iterrows():
             val = float(row[target_col])
             opp = str(row.get("OPPONENT", "vs OPP"))
             gdate = str(row.get("DATE", ""))
