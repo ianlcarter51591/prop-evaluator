@@ -1,131 +1,102 @@
-"""Universal multi-sport game log fetcher for any player."""
+"""NFL Dedicated Player Game-Log Fetcher via ESPN API."""
 from __future__ import annotations
 
-from datetime import date
-from typing import Dict, Optional, Tuple
-import pandas as pd
 import requests
-
-MLB_BASE: str = "https://statsapi.mlb.com/api/v1"
-TIMEOUT: int = 10
+import pandas as pd
+import streamlit as st
+from typing import Tuple, Optional, Dict, Any
 
 HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
 }
+TIMEOUT: int = 8
 
-
-@st.cache_data(ttl=1800)
-def fetch_nba_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Generate dynamic recent game logs for any NBA player entered."""
-    try:
-        # Generate consistent, realistic stats based on player name hash / string length
-        seed = sum(ord(c) for c in player_name.lower())
-        base_pts = 18.0 + (seed % 12)
-        
-        rows = [
-            {"PTS": round(base_pts + 2.0, 1), "REB": 5.0, "AST": 6.2, "3PM": 2.5, "OPPONENT": "@ BOS", "DATE": "10/18"},
-            {"PTS": round(base_pts - 3.0, 1), "REB": 4.0, "AST": 8.0, "3PM": 3.0, "OPPONENT": "vs NYK", "DATE": "10/20"},
-            {"PTS": round(base_pts + 5.0, 1), "REB": 6.0, "AST": 5.0, "3PM": 2.0, "OPPONENT": "@ MIA", "DATE": "10/22"},
-            {"PTS": round(base_pts, 1), "REB": 5.5, "AST": 7.1, "3PM": 3.5, "OPPONENT": "vs CHI", "DATE": "10/24"},
-        ]
-        return pd.DataFrame(rows), None
-    except Exception as e:
-        return pd.DataFrame(), f"NBA fetch error: {e}"
-
-
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=900)
 def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Generate dynamic recent game logs for any NFL player entered."""
+    """Fetch live NFL game logs from ESPN API for any NFL player."""
+    if not player_name or not player_name.strip():
+        return pd.DataFrame(), "Please enter a player name."
+
     try:
-        seed = sum(ord(c) for c in player_name.lower())
-        base_pass = 220.0 + (seed % 90)
-        base_rush = 35.0 + (seed % 45)
-        base_rec = 45.0 + (seed % 35)
+        # 1. Search ESPN for Player ID
+        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=football&league=nfl"
+        res = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT).json()
+        items = res.get("items", [])
+        
+        if not items:
+            return pd.DataFrame(), f"NFL player '{player_name}' not found on ESPN."
 
-        rows = [
-            {
-                "PASS_YDS": round(base_pass - 25.0, 1),
-                "PASS_TDS": 1.0,
-                "RUSH_YDS": round(base_rush - 10.0, 1),
-                "RUSH_ATT": 12.0,
-                "REC_YDS": round(base_rec - 5.0, 1),
-                "RECEPTIONS": 4.0,
-                "INTERCEPTIONS": 1.0,
-                "OPPONENT": "@ SEA",
-                "DATE": "9/09"
-            },
-            {
-                "PASS_YDS": round(base_pass + 15.0, 1),
-                "PASS_TDS": 2.0,
-                "RUSH_YDS": round(base_rush + 5.0, 1),
-                "RUSH_ATT": 15.0,
-                "REC_YDS": round(base_rec + 12.0, 1),
-                "RECEPTIONS": 6.0,
-                "INTERCEPTIONS": 0.0,
-                "OPPONENT": "vs PIT",
-                "DATE": "9/20"
-            },
-            {
-                "PASS_YDS": round(base_pass - 10.0, 1),
-                "PASS_TDS": 1.0,
-                "RUSH_YDS": round(base_rush - 5.0, 1),
-                "RUSH_ATT": 10.0,
-                "REC_YDS": round(base_rec - 8.0, 1),
-                "RECEPTIONS": 3.0,
-                "INTERCEPTIONS": 2.0,
-                "OPPONENT": "@ JAC",
-                "DATE": "9/27"
-            },
-            {
-                "PASS_YDS": round(base_pass + 40.0, 1),
-                "PASS_TDS": 3.0,
-                "RUSH_YDS": round(base_rush + 20.0, 1),
-                "RUSH_ATT": 16.0,
-                "REC_YDS": round(base_rec + 25.0, 1),
-                "RECEPTIONS": 7.0,
-                "INTERCEPTIONS": 0.0,
-                "OPPONENT": "@ BUF",
-                "DATE": "10/04"
-            },
-            {
-                "PASS_YDS": round(base_pass + 20.0, 1),
-                "PASS_TDS": 2.0,
-                "RUSH_YDS": round(base_rush, 1),
-                "RUSH_ATT": 13.0,
-                "REC_YDS": round(base_rec + 5.0, 1),
-                "RECEPTIONS": 5.0,
-                "INTERCEPTIONS": 1.0,
-                "OPPONENT": "vs LV",
-                "DATE": "10/11"
-            },
-            {
-                "PASS_YDS": round(base_pass - 5.0, 1),
-                "PASS_TDS": 2.0,
-                "RUSH_YDS": round(base_rush + 10.0, 1),
-                "RUSH_ATT": 14.0,
-                "REC_YDS": round(base_rec + 15.0, 1),
-                "RECEPTIONS": 5.0,
-                "INTERCEPTIONS": 0.0,
-                "OPPONENT": "vs NYJ",
-                "DATE": "10/18"
-            },
-        ]
-        return pd.DataFrame(rows), None
+        player_id = items[0].get("id")
+        
+        # 2. Fetch Athlete Gamelog
+        gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{player_id}/gamelog"
+        g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+
+        rows = []
+
+        def safe_float(val):
+            try:
+                s = str(val).strip()
+                if not s or s in ["-", "None", "null"]:
+                    return 0.0
+                return float(s.replace(",", ""))
+            except (ValueError, TypeError):
+                return 0.0
+
+        for stype in g_res.get("seasonTypes", []):
+            for category in stype.get("categories", []):
+                labels = [str(l).upper().strip() for l in category.get("labels", [])]
+                events = category.get("events", [])
+
+                for event in events:
+                    stats = event.get("stats", [])
+                    opponent = event.get("opponent", {}).get("abbreviation", "OPP")
+                    is_home = event.get("homeAway") == "home"
+                    raw_date = event.get("gameDate", "")
+
+                    formatted_date = "G"
+                    if raw_date:
+                        parts = raw_date.split("T")[0].split("-")
+                        if len(parts) == 3:
+                            formatted_date = f"{int(parts[1])}/{int(parts[2])}"
+
+                    if stats and labels and len(stats) == len(labels):
+                        stat_dict = dict(zip(labels, stats))
+                        
+                        # Parsing ESPN Stats Table Columns
+                        pass_yds = safe_float(stat_dict.get("PASS YDS", stat_dict.get("YDS", 0)))
+                        pass_tds = safe_float(stat_dict.get("PASS TD", stat_dict.get("TD", 0)))
+                        rush_yds = safe_float(stat_dict.get("RUSH YDS", 0))
+                        rush_att = safe_float(stat_dict.get("CAR", stat_dict.get("ATT", 0)))
+                        rec_yds = safe_float(stat_dict.get("REC YDS", 0))
+                        receptions = safe_float(stat_dict.get("REC", 0))
+                        ints = safe_float(stat_dict.get("INT", 0))
+
+                        rows.append({
+                            "PASSING YARDS": pass_yds,
+                            "PASSING TDS": pass_tds,
+                            "RUSHING YARDS": rush_yds,
+                            "RUSHING ATTEMPTS": rush_att,
+                            "RECEIVING YARDS": rec_yds,
+                            "RECEPTIONS": receptions,
+                            "INTERCEPTIONS": ints,
+                            "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
+                            "DATE": formatted_date,
+                        })
+
+        if not rows:
+            return pd.DataFrame(), f"No ESPN game logs found for '{player_name}'."
+
+        df = pd.DataFrame(rows)
+        return df, None
+
     except Exception as e:
-        return pd.DataFrame(), f"NFL fetch error: {e}"
+        return pd.DataFrame(), f"ESPN API Error: {e}"
 
 
-@st.cache_data(ttl=1800)
+def fetch_nba_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
+    return pd.DataFrame(), None
+
 def fetch_mlb_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Generate dynamic recent game logs for any MLB player entered."""
-    try:
-        rows = [
-            {"hits": 1.0, "baseonballs": 1.0, "strikeouts": 0.0, "OPPONENT": "@ NYY", "DATE": "9/12"},
-            {"hits": 2.0, "baseonballs": 0.0, "strikeouts": 1.0, "OPPONENT": "vs BOS", "DATE": "9/14"},
-            {"hits": 0.0, "baseonballs": 2.0, "strikeouts": 2.0, "OPPONENT": "@ BAL", "DATE": "9/16"},
-            {"hits": 3.0, "baseonballs": 1.0, "strikeouts": 0.0, "OPPONENT": "vs TOR", "DATE": "9/18"},
-        ]
-        return pd.DataFrame(rows), None
-    except Exception as e:
-        return pd.DataFrame(), f"MLB fetch error: {e}"
+    return pd.DataFrame(), None
