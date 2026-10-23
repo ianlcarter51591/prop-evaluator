@@ -13,7 +13,6 @@ import streamlit as st
 BDL_API_KEY = st.secrets.get("BDL_API_KEY", os.getenv("BDL_API_KEY", ""))
 
 MLB_BASE: str = "https://statsapi.mlb.com/api/v1"
-BDL_BASE: str = "https://api.balldontlie.io/v1"
 TIMEOUT: int = 10
 
 HEADERS: Dict[str, str] = {
@@ -23,9 +22,7 @@ HEADERS: Dict[str, str] = {
 
 
 @st.cache_data(ttl=1800)
-def fetch_nba_player_logs(
-    player_name: str, target_season: Optional[Any] = None
-) -> Tuple[pd.DataFrame, Optional[str]]:
+def fetch_nba_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
     """Fetch NBA player game logs via ESPN API."""
     try:
         search_url = (
@@ -90,10 +87,8 @@ def fetch_nba_player_logs(
 
 
 @st.cache_data(ttl=1800)
-def fetch_nfl_player_logs(
-    player_name: str, target_season: Optional[Any] = None
-) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NFL player game logs via ESPN API."""
+def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch NFL player game logs via ESPN API with complete stat parsing."""
     try:
         search_url = (
             "https://site.web.api.espn.com/apis/common/v3/search"
@@ -139,16 +134,20 @@ def fetch_nfl_player_logs(
                         
                         pass_yds = row.get("YDS", row.get("PASS YDS", row.get("PYDS", 0)))
                         pass_tds = row.get("TD", row.get("PASS TD", row.get("PTD", 0)))
-                        rush_yds = row.get("RUSH YDS", row.get("YDS", 0))
-                        rec_yds = row.get("REC YDS", row.get("YDS", 0))
+                        rush_yds = row.get("RUSH YDS", 0)
+                        rush_att = row.get("CAR", row.get("ATT", row.get("RUSH ATT", 0)))
+                        rec_yds = row.get("REC YDS", 0)
                         receptions = row.get("REC", row.get("RECEPTIONS", 0))
+                        ints = row.get("INT", row.get("INTERCEPTIONS", 0))
 
                         rows.append({
                             "PASS_YDS": pass_yds,
                             "PASS_TDS": pass_tds,
                             "RUSH_YDS": rush_yds,
+                            "RUSH_ATT": rush_att,
                             "REC_YDS": rec_yds,
                             "RECEPTIONS": receptions,
+                            "INTERCEPTIONS": ints,
                             "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
                             "DATE": formatted_date,
                         })
@@ -162,15 +161,11 @@ def fetch_nfl_player_logs(
 
 
 @st.cache_data(ttl=1800)
-def fetch_mlb_player_logs(
-    player_name: str, target_season: Optional[int] = None
-) -> Tuple[pd.DataFrame, Optional[str]]:
+def fetch_mlb_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
     """Fetch MLB player game logs via StatsAPI."""
     try:
         url = f"{MLB_BASE}/people/search"
-        res = requests.get(
-            url, params={"query": player_name}, headers=HEADERS, timeout=TIMEOUT
-        )
+        res = requests.get(url, params={"query": player_name}, headers=HEADERS, timeout=TIMEOUT)
         people = res.json().get("people", [])
         if not people:
             return pd.DataFrame(), f"MLB player '{player_name}' not found."
@@ -179,9 +174,7 @@ def fetch_mlb_player_logs(
         season_year = date.today().year
         stats_url = f"{MLB_BASE}/people/{player_id}/stats"
         params = {"stats": "gameLog", "season": season_year, "group": "hitting"}
-        res = requests.get(
-            stats_url, params=params, headers=HEADERS, timeout=TIMEOUT
-        )
+        res = requests.get(stats_url, params=params, headers=HEADERS, timeout=TIMEOUT)
         if res.status_code == 200:
             splits = res.json().get("stats", [{}])[0].get("splits", [])
             rows = []
