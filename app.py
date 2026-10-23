@@ -1,4 +1,4 @@
-"""Prop Evaluator: Live DraftKings Lines & Monte Carlo Engine (High-Contrast Theme)."""
+"""Prop Evaluator: Live DraftKings Lines & Monte Carlo Engine (Powder Blue Theme)."""
 import os
 from typing import Any, Dict, Tuple
 
@@ -32,11 +32,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# High-Contrast CSS Injection to fix invisible text inside expanders & dark boxes
+# Powder Blue UI Styling
 st.markdown(
     """
     <style>
-    /* White App Background */
+    /* Pure White Main Background */
     .stApp {
         background-color: #ffffff !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -46,129 +46,128 @@ st.markdown(
         display: none !important;
     }
 
-    /* Container Boxes & Expander Cards */
-    .vision-card, [data-testid="stVerticalBlockBorderWrapper"], [data-testid="stExpander"] {
-        background: #1e293b !important;
-        border: 1px solid #334155 !important;
-        border-radius: 14px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12) !important;
+    /* All Container Boxes, Cards & Expanders Changed to Powder Blue */
+    .vision-card, 
+    [data-testid="stVerticalBlockBorderWrapper"], 
+    [data-testid="stExpander"], 
+    .vision-header {
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 14px rgba(0, 117, 255, 0.08) !important;
     }
     .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
 
     /* Fix Expander Header Title Text */
     [data-testid="stExpander"] summary, 
     [data-testid="stExpander"] summary * {
-        color: #ffffff !important;
-        font-weight: 700 !important;
+        color: #0f172a !important;
+        font-weight: 800 !important;
         font-size: 16px !important;
     }
 
-    /* Header Styling */
-    .vision-header {
-        background: #1e293b !important;
-        border: 1px solid #334155 !important;
-        border-radius: 16px;
-        padding: 20px 24px;
-        margin-bottom: 20px;
-    }
-    
+    /* Header Text Styling */
     .vision-title {
-        color: #38bdf8 !important;
+        color: #0369a1 !important;
         font-size: 26px;
-        font-weight: 800;
+        font-weight: 900;
         margin: 0;
     }
 
     .vision-sub {
-        color: #94a3b8 !important;
+        color: #0f172a !important;
         font-size: 13px;
+        font-weight: 600;
         margin-top: 4px;
     }
 
-    /* Metric Boxes */
+    /* Powder Blue Metric Boxes */
     [data-testid="stMetric"], .metric-box {
-        background: #1e293b !important;
-        border: 1px solid #334155 !important;
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
         border-radius: 12px !important;
         padding: 14px 18px !important;
         text-align: center;
     }
     [data-testid="stMetricValue"], .metric-value {
-        color: #38bdf8 !important;
-        font-size: 22px !important;
-        font-weight: 800 !important;
+        color: #0369a1 !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
     }
     [data-testid="stMetricLabel"], .metric-label {
-        color: #94a3b8 !important;
-        font-size: 10px !important;
-        font-weight: 700 !important;
+        color: #0f172a !important;
+        font-size: 11px !important;
+        font-weight: 800 !important;
         text-transform: uppercase !important;
         letter-spacing: 0.5px !important;
     }
     .metric-value-green {
-        color: #4ade80 !important;
-        font-size: 22px !important;
-        font-weight: 800 !important;
+        color: #15803d !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
     }
 
-    /* Form Labels, Paragraphs, Radio Text, and Input Titles */
+    /* Text & Label Overrides */
     label, p, span, div[data-testid="stMarkdownContainer"] p {
         color: #0f172a !important;
+        font-weight: 700 !important;
     }
 
-    /* Override Labels inside Dark Containers/Expanders to Bright White */
     [data-testid="stVerticalBlockBorderWrapper"] label,
     [data-testid="stExpander"] label,
     [data-testid="stExpander"] p,
     [data-testid="stExpander"] span,
     .vision-card label,
     [data-testid="stForm"] label {
-        color: #38bdf8 !important;
-        font-weight: 600 !important;
+        color: #0f172a !important;
+        font-weight: 700 !important;
     }
 
-    /* Form Controls & Text Inputs */
+    /* Input Fields & Dropdowns (Dark Navy Fill with Bright White Text inside Powder Blue Containers) */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #0f172a !important;
         color: #ffffff !important;
         border-radius: 10px !important;
-        border: 1px solid #475569 !important;
+        border: 2px solid #0284c7 !important;
+        font-weight: 600 !important;
     }
 
     div[data-baseweb="select"] * {
         color: #ffffff !important;
     }
 
-    /* Buttons inside dark boxes and expanders */
+    /* Action Buttons */
     .stButton>button, [data-testid="stFormSubmitButton"]>button {
         background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
         color: #ffffff !important;
-        font-weight: 800 !important;
+        font-weight: 900 !important;
         border-radius: 10px !important;
-        border: 1px solid #38bdf8 !important;
-        padding: 10px 20px !important;
+        border: None !important;
+        padding: 12px 20px !important;
         box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3) !important;
         width: 100% !important;
     }
-    .stButton>button * {
+    .stButton>button *, [data-testid="stFormSubmitButton"]>button * {
         color: #ffffff !important;
-        font-weight: 800 !important;
+        font-weight: 900 !important;
     }
 
-    /* Table & Dataframe Formatting */
+    /* Data Table Styling */
     [data-testid="stDataFrame"] {
-        background-color: #1e293b !important;
+        background-color: #ffffff !important;
+        border: 2px solid #7dd3fc !important;
         border-radius: 10px !important;
     }
 
     .summary-banner {
-        background: #1e293b !important;
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
         border-radius: 10px;
         padding: 12px 18px;
         margin-bottom: 16px;
         font-size: 14px;
-        font-weight: 600;
-        color: #38bdf8 !important;
+        font-weight: 700;
+        color: #0f172a !important;
     }
     </style>
     """,
