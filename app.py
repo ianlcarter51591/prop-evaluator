@@ -1,9 +1,9 @@
-"""NFL Prop Evaluator Dashboard with Uncached Live ESPN Game Logs."""
+"""Vision UI NFL Prop Evaluator - Clean Build."""
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from multi_sport_engine import evaluate_prop_multisport
+from multi_sport_engine import evaluate_prop
 from odds_client import fetch_player_prop_line
 
 st.set_page_config(
@@ -13,6 +13,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Vision UI Styling Injection
 st.markdown(
     """
     <style>
@@ -121,7 +122,7 @@ st.markdown(
     """
     <div class="vision-header">
         <div class="vision-title">⚡ NFL Prop Evaluator</div>
-        <div class="vision-sub">Uncached Live ESPN Gamelogs & Quantitative Monte Carlo Prop Model</div>
+        <div class="vision-sub">Quantitative Monte Carlo Player Prop Analytics Platform</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -132,7 +133,7 @@ with st.container():
     with c1:
         st.markdown("**Sport:** 🏈 NFL")
     with c2:
-        player_name = st.text_input("Player Name", value="Aaron Rodgers")
+        player_name = st.text_input("Player Name", value="")
     with c3:
         season = st.text_input("Season", value="2026")
 
@@ -166,7 +167,7 @@ with st.container():
         st.write("")
         if st.button("⚡ Fetch DraftKings Line", use_container_width=True):
             if not player_name.strip():
-                st.warning("Please type a player name.")
+                st.warning("Please enter a player name first.")
             else:
                 with st.spinner(f"Fetching line for {player_name}..."):
                     l_line, l_over, l_under, err = fetch_player_prop_line(
@@ -181,9 +182,10 @@ with st.container():
                         st.success(f"Updated: {l_line} | Over {l_over} | Under {l_under}")
                         st.rerun()
 
-if player_name.strip():
-    res = evaluate_prop_multisport(
-        league="NFL",
+if not player_name.strip():
+    st.info("👆 Enter any NFL player name above (e.g., Aaron Rodgers, Drake Maye, Josh Allen, Hunter Henry) to start evaluating props.")
+else:
+    res = evaluate_prop(
         player_name=player_name,
         stat_category=stat_category,
         line=line_val,
