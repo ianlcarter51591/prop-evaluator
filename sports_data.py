@@ -1,7 +1,8 @@
-"""NFL & NBA Data Fetcher with nflverse (nflreadpy) and BallDontLie fallback."""
+"""NFL & NBA Data Fetcher with flexible name normalization and resilient API failovers."""
 from __future__ import annotations
 
 import os
+import re
 import requests
 import pandas as pd
 import nflreadpy as nfl
@@ -25,62 +26,75 @@ def parse_val(v) -> float:
     except (ValueError, TypeError):
         return 0.0
 
+def _clean_name(name: str) -> str:
+    """Normalize player names by removing punctuation, suffixes (Jr, III), and extra spaces."""
+    s = str(name).lower()
+    s = re.sub(r"[^\w\s]", "", s)  # Remove dots, apostrophes, hyphens
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)  # Remove suffixes
+    return " ".join(s.split())
+
 def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch official nflverse player game logs strictly sorted Week 1 to Week N."""
+    """Fetch official nflverse game logs with normalized multi-field matching and API fallbacks."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
-    clean_name = player_name.strip()
+    raw_input = player_name.strip()
+    target_clean = _clean_name(raw_input)
 
-    # 1. Primary Source: nflverse via nflreadpy
-    try:
-        raw_stats = nfl.load_player_stats(seasons=[season]).to_pandas()
-        
-        if not raw_stats.empty and "player_name" in raw_stats.columns:
-            # Filter by matching player name
-            p_df = raw_stats[raw_stats["player_name"].str.lower() == clean_name.lower()].copy()
+    # 1. Primary Source: nflverse via nflreadpy (Checking primary & previous season)
+    for s_year in [season, season - 1]:
+        try:
+            raw_stats = nfl.load_player_stats(seasons=[s_year]).to_pandas()
             
-            # Try matching by last name if exact full name match is empty
-            if p_df.empty and " " in clean_name:
-                last_name = clean_name.split()[-1]
-                p_df = raw_stats[raw_stats["player_name"].str.lower().str.contains(last_name.lower())].copy()
+            if not raw_stats.empty:
+                # Add normalized columns for player_name and player_display_name
+                raw_stats["c_name"] = raw_stats["player_name"].astype(str).apply(_clean_name)
+                raw_stats["c_disp"] = raw_stats["player_display_name"].astype(str).apply(_clean_name) if "player_display_name" in raw_stats.columns else raw_stats["c_name"]
 
-            if not p_df.empty:
-                # Ensure 'week' is strictly numeric and sort ascending (Week 1 -> Week 18)
-                p_df["week_num"] = pd.to_numeric(p_df["week"], errors="coerce")
-                p_df = p_df.dropna(subset=["week_num"]).sort_values(by="week_num", ascending=True)
+                # Match against clean name or clean display name
+                p_df = raw_stats[(raw_stats["c_name"] == target_clean) | (raw_stats["c_disp"] == target_clean)].copy()
+                
+                # Secondary attempt: check if last name matches when full string match is empty
+                if p_df.empty and " " in target_clean:
+                    last_name = target_clean.split()[-1]
+                    if len(last_name) > 2:
+                        p_df = raw_stats[(raw_stats["c_name"].str.contains(last_name)) | (raw_stats["c_disp"].str.contains(last_name))].copy()
 
-                rows = []
-                for _, r in p_df.iterrows():
-                    wk_num = int(r["week_num"])
-                    week_label = f"Week {wk_num}"
-                    opp = str(r.get("opponent_team", "OPP"))
-                    
-                    rows.append({
-                        "PASSING YARDS": parse_val(r.get("passing_yards", 0)),
-                        "PASS COMPLETIONS": parse_val(r.get("completions", 0)),
-                        "PASS ATTEMPTS": parse_val(r.get("attempts", 0)),
-                        "PASSING TDS": parse_val(r.get("passing_tds", 0)),
-                        "RUSHING YARDS": parse_val(r.get("rushing_yards", 0)),
-                        "RUSHING ATTEMPTS": parse_val(r.get("carries", 0)),
-                        "RECEIVING YARDS": parse_val(r.get("receiving_yards", 0)),
-                        "RECEPTIONS": parse_val(r.get("receptions", 0)),
-                        "INTERCEPTIONS": parse_val(r.get("interceptions", 0)),
-                        "OPPONENT": f"vs {opp}",
-                        "DATE": week_label,
-                        "WEEK_NUM": wk_num,
-                    })
-                if rows:
-                    return pd.DataFrame(rows), None
-    except Exception:
-        pass
+                if not p_df.empty:
+                    p_df["week_num"] = pd.to_numeric(p_df["week"], errors="coerce")
+                    p_df = p_df.dropna(subset=["week_num"]).sort_values(by="week_num", ascending=True)
+
+                    rows = []
+                    for _, r in p_df.iterrows():
+                        wk_num = int(r["week_num"])
+                        week_label = f"Week {wk_num}"
+                        opp = str(r.get("opponent_team", "OPP"))
+                        
+                        rows.append({
+                            "PASSING YARDS": parse_val(r.get("passing_yards", 0)),
+                            "PASS COMPLETIONS": parse_val(r.get("completions", 0)),
+                            "PASS ATTEMPTS": parse_val(r.get("attempts", 0)),
+                            "PASSING TDS": parse_val(r.get("passing_tds", 0)),
+                            "RUSHING YARDS": parse_val(r.get("rushing_yards", 0)),
+                            "RUSHING ATTEMPTS": parse_val(r.get("carries", 0)),
+                            "RECEIVING YARDS": parse_val(r.get("receiving_yards", 0)),
+                            "RECEPTIONS": parse_val(r.get("receptions", 0)),
+                            "INTERCEPTIONS": parse_val(r.get("interceptions", 0)),
+                            "OPPONENT": f"vs {opp}",
+                            "DATE": week_label,
+                            "WEEK_NUM": wk_num,
+                        })
+                    if rows:
+                        return pd.DataFrame(rows), None
+        except Exception:
+            pass
 
     # 2. Secondary Source: BallDontLie API
     bdl_key = _secret("BALLDONTLIE_API_KEY")
     if bdl_key:
         try:
             headers = {"Authorization": bdl_key, "Accept": "application/json"}
-            search_res = requests.get(f"{BDL_BASE_NFL}/players", headers=headers, params={"search": clean_name}, timeout=TIMEOUT)
+            search_res = requests.get(f"{BDL_BASE_NFL}/players", headers=headers, params={"search": raw_input}, timeout=TIMEOUT)
             if search_res.status_code == 200:
                 p_data = search_res.json().get("data", [])
                 if p_data:
@@ -112,10 +126,10 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
         except Exception:
             pass
 
-    # 3. Fallback: ESPN API
+    # 3. Tertiary Fallback: ESPN API Direct Endpoint
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(clean_name)}&limit=5&type=player&sport=football&league=nfl"
+        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(raw_input)}&limit=5&type=player&sport=football&league=nfl"
         res = requests.get(search_url, headers=headers, timeout=TIMEOUT).json()
         items = res.get("items", [])
         if items:
@@ -153,3 +167,62 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
                                 game_map[eid]["PASSING TDS"] = parse_val(sdict.get("TD", 0))
                             elif "rushing" in cat_name:
                                 game_map[eid]["RUSHING YARDS"] = parse_val(sdict.get("YDS", 0))
+                                game_map[eid]["RUSHING ATTEMPTS"] = parse_val(sdict.get("CAR", sdict.get("ATT", 0)))
+                            elif "receiving" in cat_name:
+                                game_map[eid]["RECEIVING YARDS"] = parse_val(sdict.get("YDS", 0))
+                                game_map[eid]["RECEPTIONS"] = parse_val(sdict.get("REC", 0))
+
+            rows = list(game_map.values())
+            if rows:
+                return pd.DataFrame(rows), None
+    except Exception as e:
+        return pd.DataFrame(), f"Log Fetch Error: {e}"
+
+    return pd.DataFrame(), f"No active game logs found on nflverse, BallDontLie, or ESPN for '{raw_input}'."
+
+
+def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch NBA player logs from BallDontLie."""
+    if not player_name or not player_name.strip():
+        return pd.DataFrame(), "Please enter a player name."
+
+    clean_name = player_name.strip()
+    bdl_key = _secret("BALLDONTLIE_API_KEY")
+
+    if bdl_key:
+        try:
+            headers = {"Authorization": bdl_key, "Accept": "application/json"}
+            search_res = requests.get(f"{BDL_BASE_NBA}/players", headers=headers, params={"search": clean_name}, timeout=TIMEOUT)
+            if search_res.status_code == 200:
+                p_data = search_res.json().get("data", [])
+                if p_data:
+                    player_id = p_data[0]["id"]
+                    stats_res = requests.get(f"{BDL_BASE_NBA}/stats", headers=headers, params={"player_ids[]": player_id, "per_page": 20}, timeout=TIMEOUT)
+                    if stats_res.status_code == 200:
+                        stats = stats_res.json().get("data", [])
+                        rows = []
+                        for s in stats:
+                            game = s.get("game", {})
+                            g_date = game.get("date", "")[:10]
+                            f_date = f"{int(g_date.split('-')[1])}/{int(g_date.split('-')[2])}" if "-" in g_date else "G"
+                            pts = parse_val(s.get("pts", 0))
+                            reb = parse_val(s.get("reb", 0))
+                            ast = parse_val(s.get("ast", 0))
+                            rows.append({
+                                "POINTS": pts,
+                                "REBOUNDS": reb,
+                                "ASSISTS": ast,
+                                "3-POINTERS MADE": parse_val(s.get("fg3m", 0)),
+                                "PTS + REB + AST": pts + reb + ast,
+                                "STEALS": parse_val(s.get("stl", 0)),
+                                "BLOCKS": parse_val(s.get("blk", 0)),
+                                "OPPONENT": "OPP",
+                                "DATE": f_date,
+                            })
+                        if rows:
+                            df_nba = pd.DataFrame(rows)
+                            return df_nba.iloc[::-1].reset_index(drop=True), None
+        except Exception:
+            pass
+
+    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}'."
