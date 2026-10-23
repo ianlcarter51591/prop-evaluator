@@ -1,4 +1,4 @@
-"""NFL Stat Evaluator and Monte Carlo Simulation Engine."""
+"""NFL Stat Evaluator and Monte Carlo Simulation Engine with Pass Attempts & Completions."""
 import numpy as np
 import pandas as pd
 from sports_data import fetch_nfl_player_logs
@@ -44,17 +44,21 @@ def evaluate_prop_multisport(
         if err or df is None or df.empty:
             return {"error": err or f"No game logs found for '{player_name}'."}
 
-        # Match exact selected stat category
         target_col = stat_category.upper().strip()
         df.columns = [c.upper().strip() for c in df.columns]
 
         if target_col not in df.columns:
             return {"error": f"Stat category '{stat_category}' not found in logs for '{player_name}'."}
 
+        # Filter out rows where target stat was 0
+        valid_rows = df[df[target_col] > 0]
+        if valid_rows.empty:
+            valid_rows = df
+
         stats = []
         gamelog_details = []
 
-        for _, row in df.iterrows():
+        for _, row in valid_rows.iterrows():
             val = float(row[target_col])
             opp = str(row.get("OPPONENT", "vs OPP"))
             gdate = str(row.get("DATE", ""))
@@ -66,11 +70,9 @@ def evaluate_prop_multisport(
                 "x_label": f"{gdate}<br>{opp}"
             })
 
-        # Slice to max recent games selected
         stats_arr = np.array(stats[:max_recent_games])
         gamelog_details = gamelog_details[:max_recent_games]
 
-        # Explicit Mean & Median Calculations
         real_mean = float(np.mean(stats_arr))
         real_median = float(np.median(stats_arr))
 
@@ -86,7 +88,6 @@ def evaluate_prop_multisport(
         if std_dev == 0:
             std_dev = 1.0
 
-        # Monte Carlo Simulation
         simulations = np.random.normal(proj_mean, std_dev, 10000)
         over_hits = np.sum(simulations > line)
         over_model_pct = (over_hits / 10000) * 100
