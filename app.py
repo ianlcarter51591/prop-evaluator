@@ -1,4 +1,4 @@
-"""NFL Prop Evaluator Dashboard with Restored Pass Attempts and Completions."""
+"""NFL Prop Evaluator Dashboard with Uncached Live ESPN Game Logs."""
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -121,7 +121,7 @@ st.markdown(
     """
     <div class="vision-header">
         <div class="vision-title">⚡ NFL Prop Evaluator</div>
-        <div class="vision-sub">Live ESPN NFL Gamelogs & Quantitative Monte Carlo Prop Model</div>
+        <div class="vision-sub">Uncached Live ESPN Gamelogs & Quantitative Monte Carlo Prop Model</div>
     </div>
     """,
     unsafe_allow_html=True,
