@@ -1,4 +1,4 @@
-"""Vision UI Sports Prop Evaluator with Local Player Database."""
+"""Vision UI Sports Prop Evaluator with Powder Blue Text and Grey Boxes."""
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -6,26 +6,21 @@ import plotly.graph_objects as go
 from multi_sport_engine import evaluate_prop_multisport
 from odds_client import fetch_player_prop_line
 
-# Local Player Database
 PLAYER_DATABASE = {
     "NFL": [
         "Drake Maye", "Hunter Henry", "Rhamondre Stevenson", "Demario Douglas", 
         "Patrick Mahomes", "Travis Kelce", "Josh Allen", "Stefon Diggs", 
-        "Lamar Jackson", "Derrick Henry", "C.J. Stroud", "Nico Collins",
-        "Tyreek Hill", "Tua Tagovailoa", "Ja'Marr Chase", "Joe Burrow"
+        "Lamar Jackson", "Derrick Henry", "C.J. Stroud", "Nico Collins"
     ],
     "NBA": [
         "Tyrese Maxey", "Jayson Tatum", "Jaylen Brown", "Joel Embiid",
-        "LeBron James", "Anthony Davis", "Luka Doncic", "Kyrie Irving",
-        "Giannis Antetokounmpo", "Damian Lillard", "Stephen Curry", "Shai Gilgeous-Alexander"
+        "LeBron James", "Anthony Davis", "Luka Doncic", "Stephen Curry"
     ],
     "MLB": [
-        "Aaron Judge", "Juan Soto", "Shohei Ohtani", "Mookie Betts",
-        "Bryce Harper", "Trea Turner", "Gunnar Henderson", "Adley Rutschman"
+        "Aaron Judge", "Juan Soto", "Shohei Ohtani", "Mookie Betts", "Bryce Harper"
     ]
 }
 
-# Page Config
 st.set_page_config(
     page_title="Vision UI - Prop Evaluator",
     page_icon="⚡",
@@ -33,18 +28,102 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Styling Injection
+# Custom Styling: White BG, Powder Blue Text (#b9e6ff), Grey Boxes (#334155 / #1e293b)
 st.markdown(
     """
     <style>
-    .stApp { background-color: #f8fafc; color: #0f172a; font-family: -apple-system, sans-serif; }
-    .vision-header { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); }
-    .vision-title { color: #0f172a; font-size: 26px; font-weight: 800; margin: 0; }
-    .metric-box { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; text-align: center; }
-    .metric-label { color: #64748b; font-size: 10px; font-weight: 700; text-transform: uppercase; }
-    .metric-value { color: #0f172a; font-size: 22px; font-weight: 800; margin-top: 4px; }
-    .metric-value-green { color: #16a34a; font-size: 22px; font-weight: 800; margin-top: 4px; }
-    .summary-banner { background: #f1f5f9; border-radius: 10px; padding: 10px 16px; margin-bottom: 16px; font-size: 14px; font-weight: 600; color: #0f172a; }
+    .stApp {
+        background-color: #ffffff !important;
+        color: #b9e6ff !important;
+        font-family: -apple-system, sans-serif;
+    }
+    
+    .vision-header {
+        background: #1e293b !important;
+        border: 1px solid #334155 !important;
+        border-radius: 16px;
+        padding: 20px 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    
+    .vision-title {
+        color: #b9e6ff !important;
+        font-size: 26px;
+        font-weight: 800;
+        margin: 0;
+    }
+
+    .vision-sub {
+        color: #b9e6ff !important;
+        opacity: 0.8;
+    }
+
+    .metric-box {
+        background: #1e293b !important;
+        border: 1px solid #334155 !important;
+        border-radius: 12px;
+        padding: 14px;
+        text-align: center;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+    .metric-label {
+        color: #b9e6ff !important;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        opacity: 0.7;
+    }
+    .metric-value {
+        color: #b9e6ff !important;
+        font-size: 22px;
+        font-weight: 800;
+        margin-top: 4px;
+    }
+    .metric-value-green {
+        color: #4ade80 !important;
+        font-size: 22px;
+        font-weight: 800;
+        margin-top: 4px;
+    }
+
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
+        background-color: #1e293b !important;
+        color: #b9e6ff !important;
+        border-radius: 10px !important;
+        border: 1px solid #334155 !important;
+    }
+
+    div[data-baseweb="select"] * {
+        color: #b9e6ff !important;
+    }
+    
+    .stButton>button {
+        background: linear-gradient(135deg, #334155 0%, #1e293b 100%) !important;
+        color: #b9e6ff !important;
+        font-weight: 700 !important;
+        border-radius: 10px !important;
+        border: 1px solid #475569 !important;
+        padding: 10px 20px !important;
+    }
+
+    label, p, span, h1, h2, h3 {
+        color: #1e293b !important;
+    }
+
+    .metric-box * {
+        color: #b9e6ff !important;
+    }
+
+    .summary-banner {
+        background: #1e293b !important;
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #b9e6ff !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -61,6 +140,7 @@ st.markdown(
     """
     <div class="vision-header">
         <div class="vision-title">⚡ Prop Evaluator</div>
+        <div class="vision-sub">High-performance Monte Carlo sports prop analytics platform</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -72,7 +152,7 @@ with st.container():
         sport = st.radio("Sport", ["NFL", "NBA", "MLB"], horizontal=True, key="sport_choice")
     with c2:
         player_list = PLAYER_DATABASE.get(sport, ["Drake Maye"])
-        player_name = st.selectbox("Player (Database or Custom)", options=player_list, index=0)
+        player_name = st.selectbox("Player", options=player_list, index=0)
     with c3:
         season = st.text_input("Season", value="2026")
 
@@ -81,7 +161,7 @@ with st.container():
         if sport == "NBA":
             stat_options = ["PTS", "REB", "AST", "3PM"]
         elif sport == "NFL":
-            stat_options = ["Receiving Yards", "Passing Yards", "Passing TDs", "Receptions", "Rushing Yards"]
+            stat_options = ["Receiving Yards", "Passing Yards", "Passing TDs", "Receptions", "Rushing Yards", "Rushing Attempts", "Interceptions"]
         else:
             stat_options = ["Strikeouts", "Hits", "Total Bases"]
         stat_category = st.selectbox("Stat Category", stat_options)
@@ -113,7 +193,6 @@ with st.container():
                     st.success(f"Updated: {l_line} | Over {l_over} | Under {l_under}")
                     st.rerun()
 
-# Run Engine
 res = evaluate_prop_multisport(
     league=sport,
     player_name=player_name,
@@ -155,20 +234,20 @@ else:
 
             st.markdown(
                 f'<div class="summary-banner">'
-                f'Current Season Hit Rate: <span style="color:#16a34a;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
+                f'Current Season Hit Rate: <span style="color:#4ade80;">{hit_pct_season:.0f}%</span> ({len(over_hits)} of {len(df_chart)}) &nbsp;|&nbsp; '
                 f'Average: {df_chart["stat_value"].mean():.2f} &nbsp;|&nbsp; '
                 f'Median: {df_chart["stat_value"].median():.2f}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
-            colors = ["#16a34a" if val > line_val else "#dc2626" for val in df_chart["stat_value"]]
+            colors = ["#22c55e" if val > line_val else "#ef4444" for val in df_chart["stat_value"]]
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=df_chart["x_label"], y=df_chart["stat_value"],
                 text=[f"{v:.1f}" if v % 1 != 0 else f"{int(v)}" for v in df_chart["stat_value"]],
                 textposition="outside", marker_color=colors, hovertext=df_chart["opponent"], hoverinfo="text+y"
             ))
-            fig.add_shape(type="line", x0=-0.5, x1=len(df_chart) - 0.5, y0=line_val, y1=line_val, line=dict(color="#2563eb", width=2, dash="dash"))
+            fig.add_shape(type="line", x0=-0.5, x1=len(df_chart) - 0.5, y0=line_val, y1=line_val, line=dict(color="#38bdf8", width=2, dash="dash"))
             fig.update_layout(plot_bgcolor="#ffffff", paper_bgcolor="#ffffff", margin=dict(l=20, r=20, t=30, b=50), height=360)
             st.plotly_chart(fig, use_container_width=True)
