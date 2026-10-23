@@ -1,4 +1,4 @@
-"""NFL & NBA Data Fetcher featuring direct NBA.com (stats.nba.com) live 2026-27 game log extraction."""
+"""NFL & NBA Data Fetcher with flexible name normalization and resilient API failovers."""
 from __future__ import annotations
 
 import os
@@ -46,6 +46,7 @@ def parse_val(v) -> float:
         return 0.0
 
 def _clean_name(name: str) -> str:
+    """Normalize player names by removing dots, punctuation, and trailing suffixes."""
     s = str(name).lower()
     s = re.sub(r"[^\w\s]", "", s)
     s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)
@@ -133,99 +134,106 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
 
 
 def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch live NBA game logs directly from stats.nba.com (NBA.com) for the 2026-27 season with BallDontLie fallback."""
+    """Fetch NBA game logs with normalized name matching for stats.nba.com and BallDontLie."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
-    clean_name = player_name.strip()
+    raw_input = player_name.strip()
+    target_clean = _clean_name(raw_input)
 
     # 1. Primary Source: Direct stats.nba.com (NBA.com API)
     if HAS_NBA_API:
         try:
-            matched_players = nba_players_static.find_players_by_full_name(clean_name)
-            if not matched_players and " " in clean_name:
-                last_name = clean_name.split()[-1]
-                matched_players = [p for p in nba_players_static.get_players() if last_name.lower() in p["full_name"].lower()]
+            all_players = nba_players_static.get_players()
+            matched_players = [p for p in all_players if _clean_name(p["full_name"]) == target_clean]
+            
+            if not matched_players and " " in target_clean:
+                last_name = target_clean.split()[-1]
+                matched_players = [p for p in all_players if last_name in _clean_name(p["full_name"])]
 
             if matched_players:
                 nba_pid = matched_players[0]["id"]
                 
-                # Fetch strictly the 2026-27 NBA regular season
-                log = playergamelog.PlayerGameLog(
-                    player_id=nba_pid,
-                    season="2026-27",
-                    headers=NBA_COM_HEADERS,
-                    timeout=TIMEOUT
-                )
-                df_raw = log.get_data_frames()[0]
-                
-                if not df_raw.empty:
-                    rows = []
-                    for _, r in df_raw.iterrows():
-                        pts = parse_val(r.get("PTS", 0))
-                        reb = parse_val(r.get("REB", 0))
-                        ast = parse_val(r.get("AST", 0))
-                        g_date = str(r.get("GAME_DATE", ""))
+                # Try 2026-27 season first, then fallback to 2025-26 if active games are pending
+                for s_str in ["2026-27", "2025-26"]:
+                    try:
+                        log = playergamelog.PlayerGameLog(
+                            player_id=nba_pid,
+                            season=s_str,
+                            headers=NBA_COM_HEADERS,
+                            timeout=TIMEOUT
+                        )
+                        df_raw = log.get_data_frames()[0]
                         
-                        rows.append({
-                            "POINTS": pts,
-                            "REBOUNDS": reb,
-                            "ASSISTS": ast,
-                            "3-POINTERS MADE": parse_val(r.get("FG3M", 0)),
-                            "PTS + REB + AST": pts + reb + ast,
-                            "STEALS": parse_val(r.get("STL", 0)),
-                            "BLOCKS": parse_val(r.get("BLK", 0)),
-                            "OPPONENT": str(r.get("MATCHUP", "OPP")),
-                            "DATE": g_date,
-                        })
-                    if rows:
-                        df_official = pd.DataFrame(rows)
-                        # Reverse so games appear in chronological order (oldest to newest)
-                        return df_official.iloc[::-1].reset_index(drop=True), None
+                        if not df_raw.empty:
+                            rows = []
+                            for _, r in df_raw.iterrows():
+                                pts = parse_val(r.get("PTS", 0))
+                                reb = parse_val(r.get("REB", 0))
+                                ast = parse_val(r.get("AST", 0))
+                                g_date = str(r.get("GAME_DATE", ""))
+                                
+                                rows.append({
+                                    "POINTS": pts,
+                                    "REBOUNDS": reb,
+                                    "ASSISTS": ast,
+                                    "3-POINTERS MADE": parse_val(r.get("FG3M", 0)),
+                                    "PTS + REB + AST": pts + reb + ast,
+                                    "STEALS": parse_val(r.get("STL", 0)),
+                                    "BLOCKS": parse_val(r.get("BLK", 0)),
+                                    "OPPONENT": str(r.get("MATCHUP", "OPP")),
+                                    "DATE": g_date,
+                                })
+                            if rows:
+                                df_official = pd.DataFrame(rows)
+                                return df_official.iloc[::-1].reset_index(drop=True), None
+                    except Exception:
+                        continue
         except Exception:
             pass
 
-    # 2. Secondary Fallback Source: BallDontLie API
+    # 2. Secondary Fallback Source: BallDontLie API (Searching raw input & stripped punctuation)
     bdl_key = _secret("BALLDONTLIE_API_KEY")
     if bdl_key:
-        try:
-            headers = {"Authorization": bdl_key, "Accept": "application/json"}
-            search_res = requests.get(f"{BDL_BASE_NBA}/players", headers=headers, params={"search": clean_name}, timeout=TIMEOUT)
-            if search_res.status_code == 200:
-                p_data = search_res.json().get("data", [])
-                if p_data:
-                    player_id = p_data[0]["id"]
-                    stats_res = requests.get(
-                        f"{BDL_BASE_NBA}/stats",
-                        headers=headers,
-                        params={"player_ids[]": player_id, "seasons[]": season, "per_page": 20},
-                        timeout=TIMEOUT
-                    )
-                    if stats_res.status_code == 200:
-                        stats = stats_res.json().get("data", [])
-                        rows = []
-                        for s in stats:
-                            game = s.get("game", {})
-                            g_date = game.get("date", "")[:10]
-                            f_date = f"{int(g_date.split('-')[1])}/{int(g_date.split('-')[2])}" if "-" in g_date else "G"
-                            pts = parse_val(s.get("pts", 0))
-                            reb = parse_val(s.get("reb", 0))
-                            ast = parse_val(s.get("ast", 0))
-                            rows.append({
-                                "POINTS": pts,
-                                "REBOUNDS": reb,
-                                "ASSISTS": ast,
-                                "3-POINTERS MADE": parse_val(s.get("fg3m", 0)),
-                                "PTS + REB + AST": pts + reb + ast,
-                                "STEALS": parse_val(s.get("stl", 0)),
-                                "BLOCKS": parse_val(s.get("blk", 0)),
-                                "OPPONENT": "OPP",
-                                "DATE": f_date,
-                            })
-                        if rows:
-                            df_nba = pd.DataFrame(rows)
-                            return df_nba.iloc[::-1].reset_index(drop=True), None
-        except Exception:
-            pass
+        for search_term in [raw_input, target_clean]:
+            try:
+                headers = {"Authorization": bdl_key, "Accept": "application/json"}
+                search_res = requests.get(f"{BDL_BASE_NBA}/players", headers=headers, params={"search": search_term}, timeout=TIMEOUT)
+                if search_res.status_code == 200:
+                    p_data = search_res.json().get("data", [])
+                    if p_data:
+                        player_id = p_data[0]["id"]
+                        stats_res = requests.get(
+                            f"{BDL_BASE_NBA}/stats",
+                            headers=headers,
+                            params={"player_ids[]": player_id, "per_page": 25},
+                            timeout=TIMEOUT
+                        )
+                        if stats_res.status_code == 200:
+                            stats = stats_res.json().get("data", [])
+                            rows = []
+                            for s in stats:
+                                game = s.get("game", {})
+                                g_date = game.get("date", "")[:10]
+                                f_date = f"{int(g_date.split('-')[1])}/{int(g_date.split('-')[2])}" if "-" in g_date else "G"
+                                pts = parse_val(s.get("pts", 0))
+                                reb = parse_val(s.get("reb", 0))
+                                ast = parse_val(s.get("ast", 0))
+                                rows.append({
+                                    "POINTS": pts,
+                                    "REBOUNDS": reb,
+                                    "ASSISTS": ast,
+                                    "3-POINTERS MADE": parse_val(s.get("fg3m", 0)),
+                                    "PTS + REB + AST": pts + reb + ast,
+                                    "STEALS": parse_val(s.get("stl", 0)),
+                                    "BLOCKS": parse_val(s.get("blk", 0)),
+                                    "OPPONENT": "OPP",
+                                    "DATE": f_date,
+                                })
+                            if rows:
+                                df_nba = pd.DataFrame(rows)
+                                return df_nba.iloc[::-1].reset_index(drop=True), None
+            except Exception:
+                pass
 
-    return pd.DataFrame(), f"No 2026-27 season game logs found on NBA.com or BallDontLie for '{clean_name}'."
+    return pd.DataFrame(), f"No active game logs found on NBA.com or BallDontLie for '{raw_input}'."
