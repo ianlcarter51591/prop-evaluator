@@ -1,6 +1,9 @@
 """NBA and MLB game-log fetchers that return a common schema for the props app."""
 from __future__ import annotations
 
+import os
+import time
+import unicodedata
 from datetime import date
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,11 +43,217 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# NBA
+# NBA: BALLDONTLIE when a key is set (works from cloud servers), nba_api as the fallback
 # --------------------------------------------------------------------------- #
+BDL_BASE: str = "https://api.balldontlie.io/v1"
+
+
+class BdlError(Exception):
+    """BALLDONTLIE failure; status is the HTTP code (0 for network problems)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _bdl_key() -> str:
+    """Return the BALLDONTLIE key from the environment (Streamlit Secrets are exposed there)."""
+    return os.environ.get("BALLDONTLIE_API_KEY", "").strip()
+
+
+def _bdl_get(path: str, params: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """GET a BALLDONTLIE endpoint. The key travels in a header and never appears in messages."""
+    for attempt in (1, 2):
+        try:
+            resp = requests.get(
+                f"{BDL_BASE}{path}", params=params, headers={"Authorization": key}, timeout=TIMEOUT
+            )
+        except requests.RequestException as exc:
+            raise BdlError(0, f"network error: {str(exc).replace(key, '***')}") from None
+        if resp.status_code == 429 and attempt == 1:
+            try:
+                wait = min(float(resp.headers.get("Retry-After", 5)), 10.0)
+            except (TypeError, ValueError):
+                wait = 5.0
+            time.sleep(wait)
+            continue
+        if resp.status_code == 401:
+            raise BdlError(
+                401,
+                "key rejected, or your plan does not include game stats "
+                "(they need the paid ALL-STAR tier or higher)",
+            )
+        if resp.status_code == 429:
+            raise BdlError(429, "rate limit reached (the free tier allows 5 requests per minute)")
+        if resp.status_code >= 400:
+            raise BdlError(resp.status_code, f"HTTP {resp.status_code}")
+        return resp.json()
+    raise BdlError(429, "rate limit reached")
+
+
+def _norm(text: str) -> str:
+    """Lowercase and strip accents so 'Doncic' matches 'Dončić'."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return plain.casefold().strip()
+
+
+@lru_cache(maxsize=256)
+def _bdl_player(name: str, key: str) -> Optional[Tuple[int, str]]:
+    """Look up a BALLDONTLIE player id and full name (exact name preferred, accents ignored)."""
+    tokens = _norm(name).split()
+    if not tokens:
+        return None
+    term = max(tokens, key=len)
+    candidates: List[Dict[str, Any]] = []
+    cursor: Optional[int] = None
+    for _ in range(3):
+        params: Dict[str, Any] = {"search": term, "per_page": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = _bdl_get("/players", params, key)
+        candidates.extend(data.get("data", []))
+        cursor = (data.get("meta") or {}).get("next_cursor")
+        if not cursor:
+            break
+
+    def full(p: Dict[str, Any]) -> str:
+        return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+
+    wanted = " ".join(tokens)
+    picks = [p for p in candidates if _norm(full(p)) == wanted] or [
+        p for p in candidates if all(t in _norm(full(p)) for t in tokens)
+    ]
+    if not picks:
+        return None
+    picks.sort(key=lambda p: p.get("team") is None)  # prefer players currently on a team
+    return int(picks[0]["id"]), full(picks[0])
+
+
+@lru_cache(maxsize=4)
+def _bdl_teams(key: str) -> Dict[int, str]:
+    """Map BALLDONTLIE team ids to abbreviations."""
+    data = _bdl_get("/teams", {}, key)
+    return {int(t["id"]): str(t.get("abbreviation", "")) for t in data.get("data", [])}
+
+
+def _bdl_stats(player_id: int, season: int, key: str) -> List[Dict[str, Any]]:
+    """Fetch one regular season of per-game stat lines (season = start year, paginated)."""
+    rows: List[Dict[str, Any]] = []
+    cursor: Optional[int] = None
+    for _ in range(5):
+        params: Dict[str, Any] = {
+            "player_ids[]": [player_id],
+            "seasons[]": [season],
+            "season_type": "regular",
+            "per_page": 100,
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = _bdl_get("/stats", params, key)
+        rows.extend(data.get("data", []))
+        cursor = (data.get("meta") or {}).get("next_cursor")
+        if not cursor:
+            break
+    return rows
+
+
+def _nba_frame(
+    full_name: str,
+    season: pd.Series,
+    dates: pd.Series,
+    opponent: pd.Series,
+    box: pd.DataFrame,
+    source: str,
+) -> pd.DataFrame:
+    """Build the common NBA schema from per-game columns pts, reb, ast, fg3m, stl, blk, min."""
+    pts, reb, ast = box["pts"], box["reb"], box["ast"]
+    out = pd.DataFrame(
+        {
+            "player": full_name,
+            "season": season.to_numpy(),
+            "game_date": dates.to_numpy(),
+            "label": dates.dt.strftime("%m/%d").to_numpy(),
+            "opponent": opponent.to_numpy(),
+            "points": pts.to_numpy(),
+            "rebounds": reb.to_numpy(),
+            "assists": ast.to_numpy(),
+            "threes": box["fg3m"].to_numpy(),
+            "pts_reb_ast": (pts + reb + ast).to_numpy(),
+            "steals": box["stl"].to_numpy(),
+            "blocks": box["blk"].to_numpy(),
+            "minutes": box["min"].to_numpy(),
+            "source": source,
+        }
+    )
+    return out.sort_values("game_date").reset_index(drop=True)
+
+
+def _nba_logs_from_bdl(
+    player_name: str, start: int, include_prior: bool, key: str
+) -> Tuple[Optional[pd.DataFrame], str, Optional[str]]:
+    """Return (logs, full_name, error). None = failure; an empty frame = no completed games."""
+    try:
+        found = _bdl_player(player_name, key)
+        if found is None:
+            return None, player_name, f"player '{player_name}' not found"
+        pid, full_name = found
+        teams = _bdl_teams(key)
+        rows: List[Dict[str, Any]] = []
+        for s in ((start - 1, start) if include_prior else (start,)):
+            rows.extend(_bdl_stats(pid, s, key))
+        records = [
+            {
+                "date": (r.get("game") or {}).get("date"),
+                "season": (r.get("game") or {}).get("season"),
+                "state": (r.get("game") or {}).get("status_state") or (r.get("game") or {}).get("status"),
+                "team_id": (r.get("team") or {}).get("id"),
+                "home_id": (r.get("game") or {}).get("home_team_id"),
+                "visitor_id": (r.get("game") or {}).get("visitor_team_id"),
+                "min": r.get("min"),
+                "pts": r.get("pts"),
+                "reb": r.get("reb"),
+                "ast": r.get("ast"),
+                "fg3m": r.get("fg3m"),
+                "stl": r.get("stl"),
+                "blk": r.get("blk"),
+            }
+            for r in rows
+        ]
+        df = pd.DataFrame(records)
+        if df.empty:
+            return pd.DataFrame(), full_name, None
+
+        minutes = pd.to_numeric(df["min"].astype(str).str.split(":").str[0], errors="coerce")
+        final = df["state"].astype(str).str.lower().eq("final")  # skip live (partial) games
+        df = df[final & (minutes > 0)].reset_index(drop=True)  # skip DNPs
+        if df.empty:
+            return pd.DataFrame(), full_name, None
+
+        minutes = pd.to_numeric(df["min"].astype(str).str.split(":").str[0], errors="coerce")
+        box = pd.DataFrame(
+            {c: pd.to_numeric(df[c], errors="coerce") for c in ("pts", "reb", "ast", "fg3m", "stl", "blk")}
+        )
+        box["min"] = minutes
+        opp_id = pd.Series(np.where(df["team_id"] == df["home_id"], df["visitor_id"], df["home_id"]))
+        season_year = pd.to_numeric(df["season"], errors="coerce").fillna(start).astype(int)
+        out = _nba_frame(
+            full_name,
+            season_year.map(nba_season_str),
+            pd.to_datetime(df["date"], errors="coerce"),
+            opp_id.map(teams).fillna(""),
+            box,
+            "BALLDONTLIE",
+        )
+        return out, full_name, None
+    except BdlError as exc:
+        return None, player_name, str(exc)
+    except Exception as exc:
+        return None, player_name, f"unexpected error: {exc}"
+
+
 @lru_cache(maxsize=128)
 def _nba_player(name: str) -> Optional[Tuple[int, str]]:
-    """Look up an NBA player id and full name, preferring active exact matches."""
+    """Look up an NBA player id and full name via nba_api, preferring active exact matches."""
     from nba_api.stats.static import players
 
     query = name.strip().lower()
@@ -69,28 +278,20 @@ def _nba_season_logs(player_id: int, season: str) -> pd.DataFrame:
     return frame
 
 
-def fetch_nba_player_logs(
-    player_name: str, target_season: Optional[int] = None, include_prior: bool = False
-) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Return (game logs, message) using this season's games only (any count, minimum 1).
-
-    Contract: an EMPTY DataFrame means failure and the message is the error text; a
-    NON-EMPTY DataFrame means success and the message is only an informational note
-    (for example a small-sample heads-up). Set include_prior=True to also pull last season.
-    """
+def _nba_logs_from_nba_api(
+    player_name: str, start: int, include_prior: bool
+) -> Tuple[Optional[pd.DataFrame], str, Optional[str]]:
+    """Return (logs, full_name, error). None = failure; an empty frame = no games yet."""
     try:
-        start = target_season or nba_season_start()
-        cur, prev = nba_season_str(start), nba_season_str(start - 1)
         found = _nba_player(player_name)
         if found is None:
-            return pd.DataFrame(), f"NBA player '{player_name}' not found."
+            return None, player_name, f"player '{player_name}' not found"
         pid, full_name = found
 
-        seasons = (start - 1, start) if include_prior else (start,)
         frames: List[pd.DataFrame] = []
         last_err: Optional[Exception] = None
         any_call_ok = False
-        for s in seasons:
+        for s in ((start - 1, start) if include_prior else (start,)):
             try:
                 frame = _nba_season_logs(pid, nba_season_str(s))
                 any_call_ok = True
@@ -98,51 +299,91 @@ def fetch_nba_player_logs(
                     frames.append(frame)
             except Exception as exc:
                 last_err = exc
-
         if not frames:
             if not any_call_ok and last_err is not None:
-                return pd.DataFrame(), f"NBA data request failed for {full_name}: {last_err}"
-            return pd.DataFrame(), (
-                f"No {cur} regular-season games found for {full_name} yet. "
-                "They may not have played this season."
-            )
+                return None, full_name, f"request failed: {last_err}"
+            return pd.DataFrame(), full_name, None
 
         raw = pd.concat(frames, ignore_index=True)
         dates = pd.to_datetime(raw["GAME_DATE"], format="%b %d, %Y", errors="coerce")
         if dates.isna().any():  # fall back to flexible parsing for any other date format
             dates = dates.fillna(pd.to_datetime(raw["GAME_DATE"], errors="coerce"))
-        pts, reb, ast = _num(raw, "PTS"), _num(raw, "REB"), _num(raw, "AST")
-        out = pd.DataFrame(
+        box = pd.DataFrame(
             {
-                "player": full_name,
-                "season": raw["season_label"],
-                "game_date": dates,
-                "label": dates.dt.strftime("%m/%d"),
-                "opponent": raw["MATCHUP"].astype(str).str.split().str[-1],
-                "points": pts,
-                "rebounds": reb,
-                "assists": ast,
-                "threes": _num(raw, "FG3M"),
-                "pts_reb_ast": pts + reb + ast,
-                "steals": _num(raw, "STL"),
-                "blocks": _num(raw, "BLK"),
-                "minutes": _num(raw, "MIN"),
+                "pts": _num(raw, "PTS"),
+                "reb": _num(raw, "REB"),
+                "ast": _num(raw, "AST"),
+                "fg3m": _num(raw, "FG3M"),
+                "stl": _num(raw, "STL"),
+                "blk": _num(raw, "BLK"),
+                "min": _num(raw, "MIN"),
             }
         )
-        out = out.sort_values("game_date").reset_index(drop=True)
+        out = _nba_frame(
+            full_name,
+            raw["season_label"],
+            dates,
+            raw["MATCHUP"].astype(str).str.split().str[-1],
+            box,
+            "nba_api",
+        )
+        return out, full_name, None
+    except Exception as exc:
+        return None, player_name, str(exc)
 
+
+def fetch_nba_player_logs(
+    player_name: str, target_season: Optional[int] = None, include_prior: bool = False
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Return (game logs, message) using this season's games only (any count, minimum 1).
+
+    Source order: BALLDONTLIE when BALLDONTLIE_API_KEY is set, then nba_api. A source is
+    skipped only when it errors (a free BALLDONTLIE plan has no game stats, so it falls back).
+    Contract: an EMPTY DataFrame means failure and the message is the error text; a
+    NON-EMPTY DataFrame means success and the message is only an informational note.
+    Set include_prior=True to also pull last season.
+    """
+    try:
+        start = target_season or nba_season_start()
+        cur, prev = nba_season_str(start), nba_season_str(start - 1)
+        key = _bdl_key()
+
+        sources: List[Tuple[str, Any]] = []
+        if key:
+            sources.append(("BALLDONTLIE", lambda: _nba_logs_from_bdl(player_name, start, include_prior, key)))
+        sources.append(("nba_api", lambda: _nba_logs_from_nba_api(player_name, start, include_prior)))
+
+        problems: List[str] = []
+        out: Optional[pd.DataFrame] = None
+        full_name, used = player_name, ""
+        for label, run in sources:
+            frame, name, err = run()
+            if frame is not None:
+                out, full_name, used = frame, name, label
+                break
+            problems.append(f"{label}: {err}")
+        if out is None:
+            return pd.DataFrame(), "NBA data unavailable. " + " | ".join(problems)
+        if out.empty:
+            return pd.DataFrame(), (
+                f"No {cur} regular-season games found for {full_name} yet. "
+                "They may not have played this season."
+            )
+
+        notes: List[str] = []
+        if problems:
+            notes.append(f"{problems[0]}; used {used} instead.")
         n_cur = int((out["season"] == cur).sum())
-        note: Optional[str] = None
         if n_cur == 0:
-            note = f"No {cur} games yet; showing {prev} logs."
+            notes.append(f"No {cur} games yet; showing {prev} logs.")
         elif include_prior and n_cur < 10:
-            note = f"Only {n_cur} games in {cur}; {prev} games included to fill the sample."
+            notes.append(f"Only {n_cur} games in {cur}; {prev} games included to fill the sample.")
         elif n_cur < SMALL_SAMPLE_GAMES:
-            note = (
+            notes.append(
                 f"Small sample: {n_cur} game(s) so far in {cur}. "
                 "The projection leans heavily on those games."
             )
-        return out, note
+        return out, " ".join(notes) or None
     except Exception as exc:
         return pd.DataFrame(), f"NBA fetcher error: {exc}"
 
@@ -239,6 +480,7 @@ def fetch_mlb_player_logs(
                 "game_date": dates,
                 "label": dates.dt.strftime("%m/%d"),
                 "opponent": raw["opponent"],
+                "source": "MLB Stats API",
             }
         )
         note: Optional[str] = None
