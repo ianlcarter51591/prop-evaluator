@@ -189,17 +189,44 @@ def load_offer_into_model(
     ss["ran_sport"] = sport
 
 
+def _secret(name: str) -> str:
+    """Read a server-side secret (Streamlit Secrets first, then environment). Never shown in the UI."""
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
+    return os.environ.get(name, "").strip()
+
+
+def resolve_api_key(typed: str) -> str:
+    """A typed key wins. A saved key is used only after the optional LIVE_PASSCODE check."""
+    if typed.strip():
+        return typed.strip()
+    saved = _secret("ODDS_API_KEY")
+    if not saved:
+        return ""
+    passcode = _secret("LIVE_PASSCODE")
+    if passcode:
+        entered = st.text_input("Passcode to use the saved key", type="password", key="live_pass")
+        if entered != passcode:
+            st.caption("Enter the passcode to use the saved key.")
+            return ""
+    return saved
+
+
 def render_live_panel(sport: str) -> None:
     """Expander: load games (free), pick a game and prop type, fetch the board."""
     ss = st.session_state
     with st.expander("📡 Live Lines (The Odds API)"):
-        api_key = st.text_input(
-            "API key", type="password", value=os.environ.get("ODDS_API_KEY", ""), key="odds_key"
-        ).strip()
-        st.caption(
-            "Keep your key private: never paste it into chat or screenshots. "
-            "Locally you can also run `export ODDS_API_KEY=...` before launching."
+        typed_key = st.text_input(
+            "API key (leave blank to use the key saved in Secrets)", type="password", key="odds_key"
         )
+        api_key = resolve_api_key(typed_key)
+        if not api_key:
+            st.caption("Add a key above, or save ODDS_API_KEY in this app's Secrets.")
+        else:
+            st.caption("Key ready. Never paste your key into chat or screenshots.")
         books_text = st.text_input(
             "Bookmaker keys (comma-separated)", value=DEFAULT_BOOKS, key="odds_books"
         )
@@ -473,6 +500,7 @@ def render_results(result: Dict[str, Any], params: Dict[str, Any]) -> None:
 
     key = result["best_side_key"]
     st.caption(
+        f"Data: {result['data_source']} | "
         f"{key.title()}: model {result[f'{key}_model_pct']:.1f}% | market "
         f"({result['devig_method']} devig) {result[f'{key}_market_pct']:.1f}% | blended "
         f"{result[f'{key}_blend_pct']:.1f}% at model weight {result['model_weight']:.2f}. "
@@ -575,8 +603,16 @@ def render_backtest(params: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def expose_secret_to_env(name: str) -> None:
+    """Make a Streamlit secret visible to the data modules, which read environment variables."""
+    value = _secret(name)
+    if value:
+        os.environ[name] = value
+
+
 def main() -> None:
     """Render the Vision UI prop evaluator."""
+    expose_secret_to_env("BALLDONTLIE_API_KEY")
     st.title("⚡ Prop Evaluator")
     st.caption("Monte Carlo prop analytics for NFL, NBA and MLB")
 
@@ -601,6 +637,9 @@ def main() -> None:
         result = cached_evaluate(**params)
 
     if "error" in result:
+        clear_cache = getattr(cached_evaluate, "clear", None)
+        if callable(clear_cache):  # never keep a failed lookup cached for 5 minutes
+            clear_cache()
         st.error(result["error"])
         st.stop()
 
