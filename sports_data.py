@@ -1,124 +1,101 @@
-"""NFL Dedicated Player Game-Log Fetcher with direct live ESPN API parsing."""
+"""NFL & NBA Game-Log Fetcher integrated with BallDontLie API."""
 from __future__ import annotations
 
+import os
 import requests
 import pandas as pd
+import streamlit as st
 from typing import Tuple, Optional, Dict, Any
 
-HEADERS: Dict[str, str] = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
+# Retrieve BDL API Key directly from Streamlit Secrets or Environment
+BDL_API_KEY = st.secrets.get("BDL_API_KEY", os.getenv("BDL_API_KEY", ""))
+BDL_BASE_NFL = "https://api.balldontlie.io/nfl/v1"
+BDL_BASE_NBA = "https://api.balldontlie.io/v1"
+TIMEOUT = 10
+
+HEADERS = {
+    "Authorization": BDL_API_KEY,
+    "Accept": "application/json",
 }
-TIMEOUT: int = 8
 
 def parse_val(v) -> float:
-    """Safely convert numeric string or slash stats into floating numbers."""
+    """Safely convert numeric or string values into floats."""
     try:
         s = str(v).strip()
         if not s or s in ["-", "None", "null", "--"]:
             return 0.0
-        if "/" in s:
-            s = s.split("/")[0].strip()
         return float(s.replace(",", ""))
     except (ValueError, TypeError):
         return 0.0
 
 def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch uncached, live game logs from ESPN's athlete endpoint."""
+    """Fetch live NFL game logs using BallDontLie API."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
+    if not BDL_API_KEY:
+        return pd.DataFrame(), "BDL_API_KEY is not found in Streamlit secrets."
+
     try:
         clean_name = player_name.strip()
-        # 1. Search ESPN API for Player ID
-        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(clean_name)}&limit=5&type=player&sport=football&league=nfl"
-        res = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT).json()
-        items = res.get("items", [])
+        # 1. Search Player ID
+        search_url = f"{BDL_BASE_NFL}/players"
+        res = requests.get(search_url, headers=HEADERS, params={"search": clean_name}, timeout=TIMEOUT)
         
-        if not items:
-            return pd.DataFrame(), f"NFL player '{player_name}' not found on ESPN."
+        if res.status_code == 401:
+            return pd.DataFrame(), "BallDontLie API Key Unauthorized (401). Check Secrets format."
+        
+        p_data = res.json().get("data", [])
+        if not p_data:
+            return pd.DataFrame(), f"NFL player '{player_name}' not found on BallDontLie."
 
-        player_id = items[0].get("id")
-        
-        # 2. Fetch Gamelog directly from ESPN Athlete Endpoint
-        gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{player_id}/gamelog"
-        g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
+        player_id = p_data[0]["id"]
+
+        # 2. Fetch Player Game Stats
+        stats_url = f"{BDL_BASE_NFL}/stats"
+        params = {
+            "player_ids[]": player_id,
+            "per_page": 15
+        }
+        s_res = requests.get(stats_url, headers=HEADERS, params=params, timeout=TIMEOUT).json()
+        stats_data = s_res.get("data", [])
+
+        if not stats_data:
+            return pd.DataFrame(), f"No recent game logs found for '{player_name}'."
 
         rows = []
+        for s in stats_data:
+            game = s.get("game", {})
+            g_date = game.get("date", "")[:10]
+            if g_date:
+                parts = g_date.split("-")
+                formatted_date = f"{int(parts[1])}/{int(parts[2])}" if len(parts) == 3 else "G"
+            else:
+                formatted_date = "G"
 
-        for stype in g_res.get("seasonTypes", []):
-            for category in stype.get("categories", []):
-                labels = [str(l).upper().strip() for l in category.get("labels", [])]
-                events = category.get("events", [])
+            home_team = game.get("home_team_id")
+            player_team = s.get("team", {}).get("id")
+            opp_code = "OPP"
 
-                for event in events:
-                    stats = event.get("stats", [])
-                    opponent = event.get("opponent", {}).get("abbreviation", "OPP")
-                    is_home = event.get("homeAway") == "home"
-                    raw_date = event.get("gameDate", "")
-
-                    formatted_date = "G"
-                    if raw_date:
-                        parts = raw_date.split("T")[0].split("-")
-                        if len(parts) == 3:
-                            formatted_date = f"{int(parts[1])}/{int(parts[2])}"
-
-                    if stats and labels and len(stats) == len(labels):
-                        stat_dict = dict(zip(labels, stats))
-                        
-                        pass_comp = 0.0
-                        pass_att = 0.0
-                        
-                        if "C/ATT" in stat_dict:
-                            c_att_str = str(stat_dict["C/ATT"]).strip()
-                            if "/" in c_att_str:
-                                c_parts = c_att_str.split("/")
-                                pass_comp = parse_val(c_parts[0])
-                                pass_att = parse_val(c_parts[1])
-
-                        pass_yds = 0.0
-                        if "YDS" in stat_dict and "C/ATT" in stat_dict:
-                            pass_yds = parse_val(stat_dict["YDS"])
-                        elif "PASS YDS" in stat_dict:
-                            pass_yds = parse_val(stat_dict["PASS YDS"])
-                        elif "PYDS" in stat_dict:
-                            pass_yds = parse_val(stat_dict["PYDS"])
-
-                        pass_tds = parse_val(stat_dict.get("PASS TD", stat_dict.get("TD", 0)))
-                        
-                        # Rushing Stat Parsing
-                        rush_yds = parse_val(stat_dict.get("RUSH YDS", 0))
-                        rush_att = parse_val(stat_dict.get("CAR", stat_dict.get("ATT", 0)))
-                        
-                        # Receiving Stat Parsing
-                        rec_yds = parse_val(stat_dict.get("REC YDS", 0))
-                        receptions = parse_val(stat_dict.get("REC", 0))
-                        
-                        # Defensive / Passing Turnover Parsing
-                        ints = parse_val(stat_dict.get("INT", 0))
-
-                        rows.append({
-                            "PASSING YARDS": pass_yds,
-                            "PASS COMPLETIONS": pass_comp,
-                            "PASS ATTEMPTS": pass_att,
-                            "PASSING TDS": pass_tds,
-                            "RUSHING YARDS": rush_yds,
-                            "RUSHING ATTEMPTS": rush_att,
-                            "RECEIVING YARDS": rec_yds,
-                            "RECEPTIONS": receptions,
-                            "INTERCEPTIONS": ints,
-                            "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
-                            "DATE": formatted_date,
-                        })
-
-        if not rows:
-            return pd.DataFrame(), f"No ESPN game logs found for '{player_name}'."
+            rows.append({
+                "PASSING YARDS": parse_val(s.get("passing_yards", 0)),
+                "PASS COMPLETIONS": parse_val(s.get("passing_completions", 0)),
+                "PASS ATTEMPTS": parse_val(s.get("passing_attempts", 0)),
+                "PASSING TDS": parse_val(s.get("passing_touchdowns", 0)),
+                "RUSHING YARDS": parse_val(s.get("rushing_yards", 0)),
+                "RUSHING ATTEMPTS": parse_val(s.get("rushing_attempts", 0)),
+                "RECEIVING YARDS": parse_val(s.get("receiving_yards", 0)),
+                "RECEPTIONS": parse_val(s.get("receptions", 0)),
+                "INTERCEPTIONS": parse_val(s.get("interceptions", 0)),
+                "OPPONENT": f"vs {opp_code}" if player_team == home_team else f"@ {opp_code}",
+                "DATE": formatted_date,
+            })
 
         df = pd.DataFrame(rows)
         return df, None
 
     except Exception as e:
-        return pd.DataFrame(), f"ESPN API Error: {e}"
+        return pd.DataFrame(), f"BallDontLie API Error: {e}"
 
 
 def fetch_nba_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
