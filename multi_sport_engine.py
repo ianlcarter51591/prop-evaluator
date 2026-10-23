@@ -1,11 +1,7 @@
-"""Multi-sport evaluation engine supporting Rushing Attempts and Interceptions."""
+"""NFL Stat Evaluator and Monte Carlo Simulation Engine."""
 import numpy as np
 import pandas as pd
-from sports_data import (
-    fetch_nba_player_logs,
-    fetch_mlb_player_logs,
-    fetch_nfl_player_logs,
-)
+from sports_data import fetch_nfl_player_logs
 
 
 def american_to_implied_prob(american_odds):
@@ -42,92 +38,55 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate sports prop with expanded stat mappings."""
+    """Evaluate NFL prop with exact alignment between mean, median, and game logs."""
     try:
+        df, err = fetch_nfl_player_logs(player_name)
+        if err or df is None or df.empty:
+            return {"error": err or f"No game logs found for '{player_name}'."}
+
+        # Match exact selected stat category
+        target_col = stat_category.upper().strip()
+        df.columns = [c.upper().strip() for c in df.columns]
+
+        if target_col not in df.columns:
+            return {"error": f"Stat category '{stat_category}' not found in logs for '{player_name}'."}
+
         stats = []
         gamelog_details = []
 
-        if league == "NBA":
-            stats = [22.0, 24.0, 25.0, 23.0, 26.0]
-            for i, v in enumerate(stats):
-                gamelog_details.append({"stat_value": v, "opponent": "vs OPP", "date": f"10/{(i+1):02d}", "x_label": f"10/{(i+1):02d}<br>vs OPP"})
-        else:
-            if league == "NFL":
-                df, err = fetch_nfl_player_logs(player_name)
-                if not err and df is not None and not df.empty:
-                    df.columns = [str(c).upper().strip() for c in df.columns]
-                    stat_clean = stat_category.upper().strip()
-                    
-                    if "PASSING TD" in stat_clean or "PASS TD" in stat_clean:
-                        target_stat = "PASS_TDS"
-                    elif "RUSHING ATTEMPT" in stat_clean or "RUSH ATT" in stat_clean or "ATT" in stat_clean:
-                        target_stat = "RUSH_ATT"
-                    elif "RUSHING YARD" in stat_clean or "RUSH YD" in stat_clean:
-                        target_stat = "RUSH_YDS"
-                    elif "RECEIVING YARD" in stat_clean or "REC YD" in stat_clean:
-                        target_stat = "REC_YDS"
-                    elif "RECEPTION" in stat_clean:
-                        target_stat = "RECEPTIONS"
-                    elif "INTERCEPTION" in stat_clean or "INT" in stat_clean:
-                        target_stat = "INTERCEPTIONS"
-                    else:
-                        target_stat = "PASS_YDS"
+        for _, row in df.iterrows():
+            val = float(row[target_col])
+            opp = str(row.get("OPPONENT", "vs OPP"))
+            gdate = str(row.get("DATE", ""))
+            stats.append(val)
+            gamelog_details.append({
+                "stat_value": val,
+                "opponent": opp,
+                "date": gdate,
+                "x_label": f"{gdate}<br>{opp}"
+            })
 
-                    if target_stat in df.columns:
-                        for _, r in df.iterrows():
-                            val = float(r.get(target_stat, 0.0))
-                            opp = str(r.get("OPPONENT", "vs OPP"))
-                            gdate = str(r.get("DATE", ""))
-                            stats.append(val)
-                            gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
-
-            elif league == "MLB":
-                df, err = fetch_mlb_player_logs(player_name)
-                if not err and df is not None and not df.empty:
-                    df.columns = [str(c).lower().strip() for c in df.columns]
-                    col_name = "hits" if "hit" in stat_category.lower() else "baseonballs"
-                    if col_name in df.columns:
-                        for _, r in df.iterrows():
-                            val = float(r.get(col_name, 0.0))
-                            opp = str(r.get("opponent", "vs OPP"))
-                            gdate = str(r.get("date", ""))
-                            stats.append(val)
-                            gamelog_details.append({"stat_value": val, "opponent": opp, "date": gdate, "x_label": f"{gdate}<br>{opp}"})
-
-            if not stats:
-                mock_opps = ["@ SEA", "vs PIT", "@ JAC", "@ BUF", "vs LV", "vs NYJ"]
-                mock_dates = ["9/09", "9/20", "9/27", "10/04", "10/11", "10/18"]
-                stat_clean = stat_category.upper().strip()
-                if "ATT" in stat_clean:
-                    mock_vals = [14.0, 18.0, 12.0, 16.0, 20.0, 15.0]
-                elif "INT" in stat_clean:
-                    mock_vals = [1.0, 0.0, 2.0, 0.0, 1.0, 1.0]
-                elif "TD" in stat_clean:
-                    mock_vals = [1.0, 2.0, 1.0, 2.0, 3.0, 1.0]
-                else:
-                    mock_vals = [24.0, 28.0, 22.0, 26.0, 30.0, 21.0]
-
-                for v, o, d in zip(mock_vals, mock_opps, mock_dates):
-                    stats.append(v)
-                    gamelog_details.append({"stat_value": v, "opponent": o, "date": d, "x_label": f"{d}<br>{o}"})
-
+        # Slice to max recent games selected
         stats_arr = np.array(stats[:max_recent_games])
         gamelog_details = gamelog_details[:max_recent_games]
 
+        # Explicit Mean & Median Calculations
+        real_mean = float(np.mean(stats_arr))
+        real_median = float(np.median(stats_arr))
+
         if projection_source == "Model (EWMA mean)":
-            base_mean = calculate_ewma(stats_arr, decay=ewma_decay)
+            base_proj = calculate_ewma(stats_arr, decay=ewma_decay)
         elif projection_source == "My mean":
-            base_mean = float(custom_val)
+            base_proj = float(custom_val)
         else:
-            base_mean = float(np.median(stats_arr))
+            base_proj = real_median
 
-        proj_mean = base_mean * matchup_multiplier
-        proj_median = float(np.median(stats_arr))
-        std_dev = float(np.std(stats_arr)) if len(stats_arr) > 1 else max(0.5, proj_mean * 0.15)
-
+        proj_mean = base_proj * matchup_multiplier
+        std_dev = float(np.std(stats_arr)) if len(stats_arr) > 1 else max(1.0, proj_mean * 0.15)
         if std_dev == 0:
-            std_dev = 0.5
+            std_dev = 1.0
 
+        # Monte Carlo Simulation
         simulations = np.random.normal(proj_mean, std_dev, 10000)
         over_hits = np.sum(simulations > line)
         over_model_pct = (over_hits / 10000) * 100
@@ -148,8 +107,8 @@ def evaluate_prop_multisport(
 
         return {
             "player_name": player_name,
-            "projection_mean": proj_mean,
-            "projection_median": proj_median,
+            "projection_mean": real_mean,
+            "projection_median": real_median,
             "best_side": best_side,
             "fair_odds": over_fair_odds if over_win_pct > under_win_pct else under_fair_odds,
             "edge_vs_market": edge_vs_market,
