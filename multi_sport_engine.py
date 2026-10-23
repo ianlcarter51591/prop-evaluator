@@ -1,4 +1,4 @@
-"""Multi-Sport Engine with Strict Player-Specific Log Extraction."""
+"""NFL Stat Evaluator and Monte Carlo Simulation Engine."""
 import numpy as np
 import pandas as pd
 from sports_data import fetch_nfl_player_logs
@@ -25,8 +25,7 @@ def calculate_ewma(stats, decay=0.8):
     return float(np.sum(stats * weights))
 
 
-def evaluate_prop_multisport(
-    league,
+def evaluate_prop(
     player_name,
     stat_category,
     line,
@@ -38,7 +37,7 @@ def evaluate_prop_multisport(
     max_recent_games=10,
     matchup_multiplier=1.0,
 ):
-    """Evaluate prop ensuring game logs are dynamically bound to the selected player."""
+    """Evaluate NFL prop with exact alignment between mean, median, and game logs."""
     try:
         df, err = fetch_nfl_player_logs(player_name)
         if err or df is None or df.empty:
