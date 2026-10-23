@@ -1,4 +1,4 @@
-"""Prop Evaluator: Live DraftKings Lines & Monte Carlo Engine (Vision Light Theme)."""
+"""Prop Evaluator: Live DraftKings Lines & Monte Carlo Engine (High-Contrast Theme)."""
 import os
 from typing import Any, Dict, Tuple
 
@@ -32,10 +32,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Vision UI Brightened Theme Styling
+# High-Contrast CSS Injection to fix invisible text inside expanders & dark boxes
 st.markdown(
     """
     <style>
+    /* White App Background */
     .stApp {
         background-color: #ffffff !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -45,14 +46,22 @@ st.markdown(
         display: none !important;
     }
 
-    /* Container Boxes & Cards */
+    /* Container Boxes & Expander Cards */
     .vision-card, [data-testid="stVerticalBlockBorderWrapper"], [data-testid="stExpander"] {
         background: #1e293b !important;
         border: 1px solid #334155 !important;
         border-radius: 14px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12) !important;
     }
     .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
+
+    /* Fix Expander Header Title Text */
+    [data-testid="stExpander"] summary, 
+    [data-testid="stExpander"] summary * {
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        font-size: 16px !important;
+    }
 
     /* Header Styling */
     .vision-header {
@@ -64,7 +73,7 @@ st.markdown(
     }
     
     .vision-title {
-        color: #b9e6ff !important;
+        color: #38bdf8 !important;
         font-size: 26px;
         font-weight: 800;
         margin: 0;
@@ -85,7 +94,7 @@ st.markdown(
         text-align: center;
     }
     [data-testid="stMetricValue"], .metric-value {
-        color: #b9e6ff !important;
+        color: #38bdf8 !important;
         font-size: 22px !important;
         font-weight: 800 !important;
     }
@@ -102,40 +111,54 @@ st.markdown(
         font-weight: 800 !important;
     }
 
-    /* Form Controls & Text Inputs */
-    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
-        background-color: #1e293b !important;
-        color: #b9e6ff !important;
-        border-radius: 10px !important;
-        border: 1px solid #334155 !important;
-    }
-
-    div[data-baseweb="select"] * {
-        color: #b9e6ff !important;
-    }
-
-    /* Buttons */
-    .stButton>button, [data-testid="stFormSubmitButton"]>button {
-        background: linear-gradient(135deg, #334155 0%, #1e293b 100%) !important;
-        color: #b9e6ff !important;
-        font-weight: 700 !important;
-        border-radius: 10px !important;
-        border: 1px solid #475569 !important;
-        padding: 10px 20px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
-        width: 100% !important;
-    }
-
-    /* Page Headings & Label Text */
-    label, p, span, h1, h2, h3 {
+    /* Form Labels, Paragraphs, Radio Text, and Input Titles */
+    label, p, span, div[data-testid="stMarkdownContainer"] p {
         color: #0f172a !important;
     }
 
+    /* Override Labels inside Dark Containers/Expanders to Bright White */
     [data-testid="stVerticalBlockBorderWrapper"] label,
     [data-testid="stExpander"] label,
+    [data-testid="stExpander"] p,
+    [data-testid="stExpander"] span,
     .vision-card label,
     [data-testid="stForm"] label {
-        color: #b9e6ff !important;
+        color: #38bdf8 !important;
+        font-weight: 600 !important;
+    }
+
+    /* Form Controls & Text Inputs */
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
+        background-color: #0f172a !important;
+        color: #ffffff !important;
+        border-radius: 10px !important;
+        border: 1px solid #475569 !important;
+    }
+
+    div[data-baseweb="select"] * {
+        color: #ffffff !important;
+    }
+
+    /* Buttons inside dark boxes and expanders */
+    .stButton>button, [data-testid="stFormSubmitButton"]>button {
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        color: #ffffff !important;
+        font-weight: 800 !important;
+        border-radius: 10px !important;
+        border: 1px solid #38bdf8 !important;
+        padding: 10px 20px !important;
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3) !important;
+        width: 100% !important;
+    }
+    .stButton>button * {
+        color: #ffffff !important;
+        font-weight: 800 !important;
+    }
+
+    /* Table & Dataframe Formatting */
+    [data-testid="stDataFrame"] {
+        background-color: #1e293b !important;
+        border-radius: 10px !important;
     }
 
     .summary-banner {
@@ -145,7 +168,7 @@ st.markdown(
         margin-bottom: 16px;
         font-size: 14px;
         font-weight: 600;
-        color: #b9e6ff !important;
+        color: #38bdf8 !important;
     }
     </style>
     """,
@@ -240,7 +263,6 @@ def main() -> None:
         c1, c2, c3 = st.columns([2, 1, 1])
         player_name = c1.text_input("Player Name", value=ss.get(f"player_{sport}", def_player), key=f"input_player_{sport}")
         
-        # Stat category dropdown dynamically synchronized via session_state
         available_stats = stat_options(sport)
         current_stat = ss.get(f"stat_{sport}", available_stats[0])
         stat_index = available_stats.index(current_stat) if current_stat in available_stats else 0
