@@ -1,7 +1,8 @@
 streamlit
 pandas
 numpy
+scipy
 plotly
 requests
-scipy
 nba_api
+jinja2
