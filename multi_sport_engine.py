@@ -358,6 +358,7 @@ def _load_nfl(player: str, season: Optional[int]) -> Tuple[pd.DataFrame, Optiona
         label="W" + logs["week"].astype(int).astype(str),
         player=logs["player_display_name"] if "player_display_name" in logs.columns else player,
         opponent=logs["opponent_team"] if "opponent_team" in logs.columns else "",
+        source="nflverse",
     )
     return logs.reset_index(drop=True), note
 
@@ -513,6 +514,7 @@ def evaluate_prop_multisport(
             "recent_games": values.tolist(),
             "game_labels": labels,
             "family": spec.family,
+            "data_source": str(logs["source"].iloc[-1]) if "source" in logs.columns else league,
             "n_games": int(len(values)),
             "variance": proj.var,
             "devig_method": devig_method,
