@@ -182,13 +182,14 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
 
 
 def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player logs from BallDontLie."""
+    """Fetch NBA game logs strictly for the current 2026-27 season via BallDontLie primary with stats.nba.com secondary."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     clean_name = player_name.strip()
-    bdl_key = _secret("BALLDONTLIE_API_KEY")
 
+    # 1. Primary Source: BallDontLie NBA (Filtered for 2026-27)
+    bdl_key = _secret("BALLDONTLIE_API_KEY")
     if bdl_key:
         try:
             headers = {"Authorization": bdl_key, "Accept": "application/json"}
@@ -197,7 +198,13 @@ def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
                 p_data = search_res.json().get("data", [])
                 if p_data:
                     player_id = p_data[0]["id"]
-                    stats_res = requests.get(f"{BDL_BASE_NBA}/stats", headers=headers, params={"player_ids[]": player_id, "per_page": 20}, timeout=TIMEOUT)
+                    # Request stats strictly for 2026 season
+                    stats_res = requests.get(
+                        f"{BDL_BASE_NBA}/stats", 
+                        headers=headers, 
+                        params={"player_ids[]": player_id, "seasons[]": season, "per_page": 25}, 
+                        timeout=TIMEOUT
+                    )
                     if stats_res.status_code == 200:
                         stats = stats_res.json().get("data", [])
                         rows = []
@@ -225,4 +232,47 @@ def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
         except Exception:
             pass
 
-    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}'."
+    # 2. Secondary Source: NBA.com Official Endpoint (Strictly 2026-27 Season)
+    if HAS_NBA_API:
+        try:
+            matched_players = nba_players_static.find_players_by_full_name(clean_name)
+            if matched_players:
+                nba_pid = matched_players[0]["id"]
+                
+                # Hardcode/format strictly for the 2026-27 season string
+                season_str = "2026-27"
+                
+                log = playergamelog.PlayerGameLog(
+                    player_id=nba_pid,
+                    season=season_str,
+                    headers=NBA_COM_HEADERS,
+                    timeout=TIMEOUT
+                )
+                df_raw = log.get_data_frames()[0]
+                
+                if not df_raw.empty:
+                    rows = []
+                    for _, r in df_raw.iterrows():
+                        pts = parse_val(r.get("PTS", 0))
+                        reb = parse_val(r.get("REB", 0))
+                        ast = parse_val(r.get("AST", 0))
+                        g_date = str(r.get("GAME_DATE", ""))
+                        
+                        rows.append({
+                            "POINTS": pts,
+                            "REBOUNDS": reb,
+                            "ASSISTS": ast,
+                            "3-POINTERS MADE": parse_val(r.get("FG3M", 0)),
+                            "PTS + REB + AST": pts + reb + ast,
+                            "STEALS": parse_val(r.get("STL", 0)),
+                            "BLOCKS": parse_val(r.get("BLK", 0)),
+                            "OPPONENT": str(r.get("MATCHUP", "OPP")),
+                            "DATE": g_date,
+                        })
+                    if rows:
+                        df_official = pd.DataFrame(rows)
+                        return df_official.iloc[::-1].reset_index(drop=True), None
+        except Exception:
+            pass
+
+    return pd.DataFrame(), f"No 2026-27 season game logs found on BallDontLie or NBA.com for '{clean_name}'."
