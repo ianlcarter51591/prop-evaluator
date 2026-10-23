@@ -1,9 +1,8 @@
-"""NFL Dedicated Player Game-Log Fetcher with explicit C/ATT splitting."""
+"""NFL Dedicated Player Game-Log Fetcher with direct live ESPN API parsing."""
 from __future__ import annotations
 
 import requests
 import pandas as pd
-import streamlit as st
 from typing import Tuple, Optional, Dict, Any
 
 HEADERS: Dict[str, str] = {
@@ -12,15 +11,27 @@ HEADERS: Dict[str, str] = {
 }
 TIMEOUT: int = 8
 
-@st.cache_data(ttl=900)
+def parse_val(v) -> float:
+    """Safely convert numeric string or slash stats into floating numbers."""
+    try:
+        s = str(v).strip()
+        if not s or s in ["-", "None", "null", "--"]:
+            return 0.0
+        if "/" in s:
+            s = s.split("/")[0].strip()
+        return float(s.replace(",", ""))
+    except (ValueError, TypeError):
+        return 0.0
+
 def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch live NFL game logs from ESPN API with explicit C/ATT splitting for completions and attempts."""
+    """Fetch uncached, live game logs from ESPN's athlete endpoint."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     try:
-        # 1. Search ESPN for Player ID
-        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(player_name)}&limit=5&type=player&sport=football&league=nfl"
+        clean_name = player_name.strip()
+        # 1. Search ESPN API for Player ID
+        search_url = f"https://site.web.api.espn.com/apis/common/v3/search?query={requests.utils.quote(clean_name)}&limit=5&type=player&sport=football&league=nfl"
         res = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT).json()
         items = res.get("items", [])
         
@@ -29,21 +40,11 @@ def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]
 
         player_id = items[0].get("id")
         
-        # 2. Fetch Athlete Gamelog
+        # 2. Fetch Gamelog directly from ESPN Athlete Endpoint
         gamelog_url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{player_id}/gamelog"
         g_res = requests.get(gamelog_url, headers=HEADERS, timeout=TIMEOUT).json()
 
         rows = []
-
-        def parse_stat_val(val):
-            """Parse standard numeric values."""
-            try:
-                s = str(val).strip()
-                if not s or s in ["-", "None", "null"]:
-                    return 0.0
-                return float(s.replace(",", ""))
-            except (ValueError, TypeError):
-                return 0.0
 
         for stype in g_res.get("seasonTypes", []):
             for category in stype.get("categories", []):
@@ -68,47 +69,50 @@ def fetch_nfl_player_logs(player_name: str) -> Tuple[pd.DataFrame, Optional[str]
                         pass_comp = 0.0
                         pass_att = 0.0
                         
-                        # Extract Completions and Attempts from C/ATT slash string (e.g., '22/35')
                         if "C/ATT" in stat_dict:
                             c_att_str = str(stat_dict["C/ATT"]).strip()
                             if "/" in c_att_str:
                                 c_parts = c_att_str.split("/")
-                                pass_comp = parse_stat_val(c_parts[0])
-                                pass_att = parse_stat_val(c_parts[1])
+                                pass_comp = parse_val(c_parts[0])
+                                pass_att = parse_val(c_parts[1])
 
-                        # Passing Yards targeting
                         pass_yds = 0.0
                         if "YDS" in stat_dict and "C/ATT" in stat_dict:
-                            pass_yds = parse_stat_val(stat_dict["YDS"])
+                            pass_yds = parse_val(stat_dict["YDS"])
                         elif "PASS YDS" in stat_dict:
-                            pass_yds = parse_stat_val(stat_dict["PASS YDS"])
+                            pass_yds = parse_val(stat_dict["PASS YDS"])
                         elif "PYDS" in stat_dict:
-                            pass_yds = parse_stat_val(stat_dict["PYDS"])
+                            pass_yds = parse_val(stat_dict["PYDS"])
 
-                        pass_tds = parse_stat_val(stat_dict.get("PASS TD", stat_dict.get("TD", 0)))
-                        rush_yds = parse_stat_val(stat_dict.get("RUSH YDS", 0))
-                        rush_att = parse_stat_val(stat_dict.get("CAR", stat_dict.get("ATT", 0)))
-                        rec_yds = parse_stat_val(stat_dict.get("REC YDS", 0))
-                        receptions = parse_stat_val(stat_dict.get("REC", 0))
-                        ints = parse_stat_val(stat_dict.get("INT", 0))
+                        pass_tds = parse_val(stat_dict.get("PASS TD", stat_dict.get("TD", 0)))
+                        
+                        # Rushing Stat Parsing
+                        rush_yds = parse_val(stat_dict.get("RUSH YDS", 0))
+                        rush_att = parse_val(stat_dict.get("CAR", stat_dict.get("ATT", 0)))
+                        
+                        # Receiving Stat Parsing
+                        rec_yds = parse_val(stat_dict.get("REC YDS", 0))
+                        receptions = parse_val(stat_dict.get("REC", 0))
+                        
+                        # Defensive / Passing Turnover Parsing
+                        ints = parse_val(stat_dict.get("INT", 0))
 
-                        if pass_yds > 0 or pass_att > 0 or rush_yds > 0 or rec_yds > 0 or pass_tds > 0 or ints > 0 or rush_att > 0:
-                            rows.append({
-                                "PASSING YARDS": pass_yds,
-                                "PASS COMPLETIONS": pass_comp,
-                                "PASS ATTEMPTS": pass_att,
-                                "PASSING TDS": pass_tds,
-                                "RUSHING YARDS": rush_yds,
-                                "RUSHING ATTEMPTS": rush_att,
-                                "RECEIVING YARDS": rec_yds,
-                                "RECEPTIONS": receptions,
-                                "INTERCEPTIONS": ints,
-                                "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
-                                "DATE": formatted_date,
-                            })
+                        rows.append({
+                            "PASSING YARDS": pass_yds,
+                            "PASS COMPLETIONS": pass_comp,
+                            "PASS ATTEMPTS": pass_att,
+                            "PASSING TDS": pass_tds,
+                            "RUSHING YARDS": rush_yds,
+                            "RUSHING ATTEMPTS": rush_att,
+                            "RECEIVING YARDS": rec_yds,
+                            "RECEPTIONS": receptions,
+                            "INTERCEPTIONS": ints,
+                            "OPPONENT": f"vs {opponent}" if is_home else f"@ {opponent}",
+                            "DATE": formatted_date,
+                        })
 
         if not rows:
-            return pd.DataFrame(), f"No active game logs found on ESPN for '{player_name}'."
+            return pd.DataFrame(), f"No ESPN game logs found for '{player_name}'."
 
         df = pd.DataFrame(rows)
         return df, None
