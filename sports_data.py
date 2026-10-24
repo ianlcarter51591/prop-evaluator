@@ -181,7 +181,7 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
     return pd.DataFrame(), f"No active game logs found on nflverse, BallDontLie, or ESPN for '{raw_input}'."
 
 
-def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
+def fetch_nba_player_logs(player_name: str, season: int = 2025) -> Tuple[pd.DataFrame, Optional[str]]:
     """Fetch NBA player logs from BallDontLie."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
