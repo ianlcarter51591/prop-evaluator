@@ -9,7 +9,7 @@ import nflreadpy as nfl
 from typing import Tuple, Optional, Dict, Any
 
 BDL_BASE_NFL = "https://api.balldontlie.io/nfl/v1"
-BDL_BASE_NBA = "https://api.balldontlie.io/v1"
+BDL_BASE_NBA = "https://api.bigballsdata.com/v1/matches?sport=basketball&league=nba&limit=3"
 TIMEOUT = 8
 
 def _secret(name: str) -> str:
