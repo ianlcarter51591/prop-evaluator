@@ -1,4 +1,4 @@
-"""Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
+"""Prop Evaluator: Direct Widget Syncing & Full Board Comparisons with Powder Blue Theme."""
 import os
 from typing import Any, Dict, Tuple
 
@@ -11,6 +11,7 @@ from multi_sport_engine import (
     SPORTS,
     default_season,
     evaluate_prop_multisport,
+    evaluate_board_projections,
     stat_options,
 )
 
@@ -205,7 +206,7 @@ def sync_populate_to_widgets(sport: str, stat_category: str, player: str, line: 
 def render_live_panel(sport: str) -> None:
     ss = st.session_state
     api_key = _secret("ODDS_API_KEY")
-    with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
+    with st.expander("📡 Fetch Live DraftKings Lines & Prop Comparisons (The Odds API)", expanded=True):
         if not api_key:
             st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
             return
@@ -227,19 +228,31 @@ def render_live_panel(sport: str) -> None:
                 format_func=lambda i: str(events.loc[i, "label"]),
                 key=f"live_game_{sport}",
             )
-            if st.button(f"Step 3: Fetch {live_stat} Odds", key=f"fetch_board_{sport}"):
+            if st.button(f"Step 3: Fetch {live_stat} Odds & Calculate Projections", key=f"fetch_board_{sport}"):
                 try:
                     event_id = str(events.loc[game_idx, "id"])
                     board, _ = fetch_prop_board(sport, event_id, live_stat, ("draftkings",), api_key)
                     ss[f"board_{sport}"] = board
+                    
+                    # Automatically evaluate the entire board's means/medians
+                    with st.spinner("Calculating player means, medians, and edges across the board..."):
+                        comparison_df = evaluate_board_projections(sport, live_stat, board)
+                        ss[f"comparison_{sport}"] = comparison_df
                 except OddsApiError as exc:
                     st.error(str(exc))
 
         board = ss.get(f"board_{sport}")
         if board is not None and not board.empty:
-            summary = summarize_board(board)
-            st.dataframe(summary, use_container_width=True)
-            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", summary["Player"].tolist(), key=f"pick_{sport}")
+            st.markdown("### 📊 Board Odds Summary")
+            st.dataframe(board, use_container_width=True)
+            
+            # Display Full Board Mean vs Median Comparison Table
+            comparison_df = ss.get(f"comparison_{sport}")
+            if comparison_df is not None and not comparison_df.empty:
+                st.markdown("### ⚡ Full Board Mean & Median Prop Comparison")
+                st.dataframe(comparison_df, use_container_width=True)
+
+            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", board["Player"].tolist(), key=f"pick_{sport}")
             offers = player_offers(board, player_pick)
             if not offers.empty:
                 row = offers.iloc[0]
