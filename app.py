@@ -1,4 +1,3 @@
-```python
 """Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
 import os
 from typing import Any, Dict, Tuple
