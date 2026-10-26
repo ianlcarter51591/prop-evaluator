@@ -1,3 +1,4 @@
+```python
 """Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
 import os
 from typing import Any, Dict, Tuple
@@ -253,7 +254,7 @@ def render_live_panel(sport: str) -> None:
 def main() -> None:
     st.markdown(
         """
-        <div class="vision-header">
+        <div class="vision-header" style="padding: 20px;">
             <div class="vision-title">⚡ NFL & NBA Prop Evaluator</div>
             <div class="vision-sub">Quantitative Monte Carlo Player Prop Analytics Platform</div>
         </div>
@@ -356,3 +357,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+```
