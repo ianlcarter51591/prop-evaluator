@@ -1,4 +1,4 @@
-"""NFL & NBA Data Fetcher using nflreadpy for NFL and nba_api for NBA."""
+"""NFL Data Fetcher using nflreadpy."""
 from __future__ import annotations
 
 import os
@@ -6,10 +6,8 @@ import re
 import requests
 import pandas as pd
 import nflreadpy as nfl
+import streamlit as st
 from typing import Tuple, Optional, Dict, Any
-
-from nba_api.stats.static import players as nba_players
-from nba_api.stats.endpoints import playergamelog
 
 BDL_BASE_NFL = "https://api.balldontlie.io/nfl/v1"
 TIMEOUT = 8
@@ -148,64 +146,3 @@ def fetch_nfl_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
             pass
 
     return pd.DataFrame(), f"No active game logs found for '{raw_input}'."
-
-
-def fetch_nba_player_logs(player_name: str, season: int | str = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player game logs using the free open-source nba_api library."""
-    if not player_name or not player_name.strip():
-        return pd.DataFrame(), "Please enter a player name."
-
-    raw_input = player_name.strip()
-    target_clean = _clean_name(raw_input)
-    season_str = format_season(season) # e.g. "2026-27"
-
-    try:
-        # Find player ID using nba_api static module
-        matched_players = nba_players.find_players_by_full_name(raw_input)
-        if not matched_players:
-            # Fallback search by last name if full name fails
-            all_p = nba_players.get_players()
-            parts = target_clean.split()
-            last_name = parts[-1] if parts else target_clean
-            matched_players = [p for p in all_p if last_name in p["full_name"].lower()]
-
-        if not matched_players:
-            return pd.DataFrame(), f"No NBA player found matching '{raw_input}'."
-
-        player_id = matched_players[0]["id"]
-
-        # Fetch player game logs for the requested season
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season_str)
-        df = gamelog.get_data_frames()[0]
-
-        if df is None or df.empty:
-            return pd.DataFrame(), f"No game logs found for '{raw_input}' in season {season_str}."
-
-        rows = []
-        for _, r in df.iterrows():
-            pts = parse_val(r.get("PTS", 0))
-            reb = parse_val(r.get("REB", 0))
-            ast = parse_val(r.get("AST", 0))
-            matchup = str(r.get("MATCHUP", "OPP"))
-            g_date = str(r.get("GAME_DATE", ""))
-
-            rows.append({
-                "POINTS": pts,
-                "REBOUNDS": reb,
-                "ASSISTS": ast,
-                "3-POINTERS MADE": parse_val(r.get("FG3M", 0)),
-                "PTS + REB + AST": pts + reb + ast,
-                "STEALS": parse_val(r.get("STL", 0)),
-                "BLOCKS": parse_val(r.get("BLK", 0)),
-                "OPPONENT": matchup,
-                "DATE": g_date,
-            })
-
-        if rows:
-            df_nba = pd.DataFrame(rows)
-            return df_nba.iloc[::-1].reset_index(drop=True), None
-
-    except Exception as e:
-        return pd.DataFrame(), f"NBA API Error: {e}"
-
-    return pd.DataFrame(), f"No active NBA game logs found for '{raw_input}'."
