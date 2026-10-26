@@ -1,32 +1,26 @@
-"""Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
+"""NFL Prop Evaluator: Direct Widget Syncing for Populate Button & Powder Blue Theme."""
 import os
-from typing import Any, Dict, Tuple
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from multi_sport_engine import (
     DEFAULTS,
-    SPORTS,
-    default_season,
-    evaluate_prop_multisport,
+    evaluate_prop,
     stat_options,
 )
 
 from odds_api_client import (
-    DEFAULT_BOOKS,
     MARKETS,
     OddsApiError,
     fetch_prop_board,
     list_events,
-    parse_books,
     player_offers,
     summarize_board,
 )
 
 st.set_page_config(
-    page_title="NFL & NBA Prop Evaluator",
+    page_title="NFL Prop Evaluator",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -113,16 +107,6 @@ st.markdown(
         font-weight: 700 !important;
     }
 
-    [data-testid="stVerticalBlockBorderWrapper"] label,
-    [data-testid="stExpander"] label,
-    [data-testid="stExpander"] p,
-    [data-testid="stExpander"] span,
-    .vision-card label,
-    [data-testid="stForm"] label {
-        color: #0f172a !important;
-        font-weight: 700 !important;
-    }
-
     /* Input Fields & Dropdowns */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #0f172a !important;
@@ -158,17 +142,6 @@ st.markdown(
         border: 2px solid #7dd3fc !important;
         border-radius: 10px !important;
     }
-
-    .summary-banner {
-        background: #b9e6ff !important;
-        border: 2px solid #7dd3fc !important;
-        border-radius: 10px;
-        padding: 12px 18px;
-        margin-bottom: 16px;
-        font-size: 14px;
-        font-weight: 700;
-        color: #0f172a !important;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -182,27 +155,25 @@ def _secret(name: str) -> str:
         pass
     return os.environ.get(name, "").strip()
 
-def sync_populate_to_widgets(sport: str, stat_category: str, player: str, line: float, over: float, under: float) -> None:
+def sync_populate_to_widgets(stat_category: str, player: str, line: float, over: float, under: float) -> None:
     """Directly update form widget state keys so inputs immediately reflect populated data."""
     ss = st.session_state
     
-    # 1. Update general values
-    ss[f"player_{sport}"] = player
-    ss[f"stat_{sport}"] = stat_category
-    ss[f"line_{sport}"] = float(line)
-    ss[f"over_{sport}"] = int(round(over))
-    ss[f"under_{sport}"] = int(round(under))
+    ss["player_val"] = player
+    ss["stat_val"] = stat_category
+    ss["line_val"] = float(line)
+    ss["over_val"] = int(round(over))
+    ss["under_val"] = int(round(under))
     
-    # 2. Directly update form widget keys
-    ss[f"input_player_{sport}"] = player
-    ss[f"input_stat_{sport}"] = stat_category
-    ss[f"input_line_{sport}"] = float(line)
-    ss[f"input_over_{sport}"] = int(round(over))
-    ss[f"input_under_{sport}"] = int(round(under))
+    ss["input_player"] = player
+    ss["input_stat"] = stat_category
+    ss["input_line"] = float(line)
+    ss["input_over"] = int(round(over))
+    ss["input_under"] = int(round(under))
     
-    ss["ran_sport"] = sport
+    ss["ran_eval"] = True
 
-def render_live_panel(sport: str) -> None:
+def render_live_panel() -> None:
     ss = st.session_state
     api_key = _secret("ODDS_API_KEY")
     with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
@@ -210,94 +181,91 @@ def render_live_panel(sport: str) -> None:
             st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
             return
 
-        live_stat = st.selectbox("Select Prop Market", list(MARKETS[sport].keys()), key=f"live_stat_{sport}")
+        live_stat = st.selectbox("Select Prop Market", list(MARKETS["NFL"].keys()), key="live_stat")
 
-        if st.button("Step 1: Load Upcoming Games", key=f"load_games_{sport}"):
+        if st.button("Step 1: Load Upcoming Games", key="load_games"):
             try:
-                events, _ = list_events(sport, api_key)
-                ss[f"events_{sport}"] = events
+                events, _ = list_events("NFL", api_key)
+                ss["events"] = events
             except OddsApiError as exc:
                 st.error(str(exc))
 
-        events = ss.get(f"events_{sport}")
+        events = ss.get("events")
         if events is not None and not events.empty:
             game_idx = st.selectbox(
                 "Step 2: Select Game",
                 range(len(events)),
                 format_func=lambda i: str(events.loc[i, "label"]),
-                key=f"live_game_{sport}",
+                key="live_game",
             )
-            if st.button(f"Step 3: Fetch {live_stat} Odds", key=f"fetch_board_{sport}"):
+            if st.button(f"Step 3: Fetch {live_stat} Odds", key="fetch_board"):
                 try:
                     event_id = str(events.loc[game_idx, "id"])
-                    board, _ = fetch_prop_board(sport, event_id, live_stat, ("draftkings",), api_key)
-                    ss[f"board_{sport}"] = board
+                    board, _ = fetch_prop_board("NFL", event_id, live_stat, ("draftkings",), api_key)
+                    ss["board"] = board
                 except OddsApiError as exc:
                     st.error(str(exc))
 
-        board = ss.get(f"board_{sport}")
+        board = ss.get("board")
         if board is not None and not board.empty:
             summary = summarize_board(board)
             st.dataframe(summary, use_container_width=True)
-            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", summary["Player"].tolist(), key=f"pick_{sport}")
+            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", summary["Player"].tolist(), key="pick_player")
             offers = player_offers(board, player_pick)
             if not offers.empty:
                 row = offers.iloc[0]
                 if st.button(
                     f"⚡ Populate {player_pick} ({row['Line']} | Over {row['Over']} / Under {row['Under']})",
-                    key=f"populate_btn_{sport}"
+                    key="populate_btn"
                 ):
-                    sync_populate_to_widgets(sport, live_stat, player_pick, row["Line"], row["Over"], row["Under"])
+                    sync_populate_to_widgets(live_stat, player_pick, row["Line"], row["Over"], row["Under"])
                     st.rerun()
 
 def main() -> None:
     st.markdown(
         """
         <div class="vision-header" style="padding: 20px;">
-            <div class="vision-title">⚡ NFL & NBA Prop Evaluator</div>
+            <div class="vision-title">⚡ NFL Prop Evaluator</div>
             <div class="vision-sub">Quantitative Monte Carlo Player Prop Analytics Platform</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    
-    sport = st.radio("Sport", list(SPORTS), horizontal=True, key="sport")
 
-    render_live_panel(sport)
+    render_live_panel()
 
     ss = st.session_state
-    def_player, def_line = DEFAULTS[sport]
+    def_player, def_line = DEFAULTS
     
     # Initialize form widget state keys if missing
-    if f"input_player_{sport}" not in ss:
-        ss[f"input_player_{sport}"] = ss.get(f"player_{sport}", def_player)
-    if f"input_stat_{sport}" not in ss:
-        ss[f"input_stat_{sport}"] = ss.get(f"stat_{sport}", stat_options(sport)[0])
-    if f"input_line_{sport}" not in ss:
-        ss[f"input_line_{sport}"] = float(ss.get(f"line_{sport}", def_line))
-    if f"input_over_{sport}" not in ss:
-        ss[f"input_over_{sport}"] = int(ss.get(f"over_{sport}", -110))
-    if f"input_under_{sport}" not in ss:
-        ss[f"input_under_{sport}"] = int(ss.get(f"under_{sport}", -110))
+    if "input_player" not in ss:
+        ss["input_player"] = ss.get("player_val", def_player)
+    if "input_stat" not in ss:
+        ss["input_stat"] = ss.get("stat_val", stat_options()[0])
+    if "input_line" not in ss:
+        ss["input_line"] = float(ss.get("line_val", def_line))
+    if "input_over" not in ss:
+        ss["input_over"] = int(ss.get("over_val", -110))
+    if "input_under" not in ss:
+        ss["input_under"] = int(ss.get("under_val", -110))
 
-    with st.form(f"form_{sport}"):
+    with st.form("evaluation_form"):
         c1, c2, c3 = st.columns([2, 1, 1])
-        player_name = c1.text_input("Player Name", key=f"input_player_{sport}")
+        player_name = c1.text_input("Player Name", key="input_player")
         
-        available_stats = stat_options(sport)
-        stat_category = c2.selectbox("Stat Category", available_stats, key=f"input_stat_{sport}")
+        available_stats = stat_options()
+        stat_category = c2.selectbox("Stat Category", available_stats, key="input_stat")
         
-        line_val = c3.number_input("Line", step=0.5, key=f"input_line_{sport}")
+        line_val = c3.number_input("Line", step=0.5, key="input_line")
 
         c4, c5 = st.columns(2)
-        over_odds = c4.number_input("Over Odds", key=f"input_over_{sport}")
-        under_odds = c5.number_input("Under Odds", key=f"input_under_{sport}")
+        over_odds = c4.number_input("Over Odds", key="input_over")
+        under_odds = c5.number_input("Under Odds", key="input_under")
 
         submitted = st.form_submit_button("⚡ Evaluate Prop")
 
-    if submitted or ss.get("ran_sport") == sport:
-        res = evaluate_prop_multisport(
-            league=sport,
+    if submitted or ss.get("ran_eval"):
+        res = evaluate_prop(
             player_name=player_name,
             stat_category=stat_category,
             line=line_val,
