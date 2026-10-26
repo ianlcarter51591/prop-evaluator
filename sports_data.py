@@ -65,7 +65,7 @@ def fetch_nfl_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
     except ValueError:
         base_year = 2026
 
-    # 1. Primary Source: nflverse via nflreadpy
+    # 1. Primary Source: nflverse via nflreadpy (Untouched & Isolated for NFL)
     for s_year in [base_year, base_year - 1]:
         try:
             raw_stats = nfl.load_player_stats(seasons=[s_year]).to_pandas()
@@ -110,7 +110,7 @@ def fetch_nfl_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
         except Exception:
             pass
 
-    # 2. Secondary Source: BallDontLie API (NFL)
+    # 2. Secondary Source: BallDontLie API (NFL Fallback)
     bdl_key = _secret("BALLDONTLIE_API_KEY")
     if bdl_key:
         try:
@@ -147,11 +147,11 @@ def fetch_nfl_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
         except Exception:
             pass
 
-    return pd.DataFrame(), f"No active game logs found for '{raw_input}'."
+    return pd.DataFrame(), f"No active NFL game logs found for '{raw_input}'."
 
 
 def fetch_nba_player_logs(player_name: str, season: int | str = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player game logs using the free open-source nba_api library."""
+    """Fetch NBA player game logs using the free open-source nba_api library (Isolated)."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
@@ -160,10 +160,8 @@ def fetch_nba_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
     season_str = format_season(season) # e.g. "2026-27"
 
     try:
-        # Find player ID using nba_api static module
         matched_players = nba_players.find_players_by_full_name(raw_input)
         if not matched_players:
-            # Fallback search by last name if full name fails
             all_p = nba_players.get_players()
             parts = target_clean.split()
             last_name = parts[-1] if parts else target_clean
@@ -174,7 +172,6 @@ def fetch_nba_player_logs(player_name: str, season: int | str = 2026) -> Tuple[p
 
         player_id = matched_players[0]["id"]
 
-        # Fetch player game logs for the requested season
         gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season_str)
         df = gamelog.get_data_frames()[0]
 
