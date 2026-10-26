@@ -38,16 +38,34 @@ def _clean_name(name: str) -> str:
     s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", s)  # Remove suffixes
     return " ".join(s.split())
 
-def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
+def format_season(season: int | str) -> str:
+    """Convert an integer year (e.g., 2026) to 'YYYY-YY' format ('2026-27')."""
+    s_str = str(season).strip()
+    if "-" in s_str:
+        return s_str  # Already formatted like '2026-27'
+    try:
+        yr = int(s_str)
+        next_yr_suffix = str(yr + 1)[-2:]
+        return f"{yr}-{next_yr_suffix}"
+    except ValueError:
+        return "2026-27"
+
+def fetch_nfl_player_logs(player_name: str, season: int | str = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
     """Fetch official nflverse game logs with normalized multi-field matching and API fallbacks."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     raw_input = player_name.strip()
     target_clean = _clean_name(raw_input)
+    
+    # Extract integer starting year for nflreadpy (e.g. 2026)
+    try:
+        base_year = int(str(season)[:4])
+    except ValueError:
+        base_year = 2026
 
     # 1. Primary Source: nflverse via nflreadpy (Checking primary & previous season)
-    for s_year in [season, season - 1]:
+    for s_year in [base_year, base_year - 1]:
         try:
             raw_stats = nfl.load_player_stats(seasons=[s_year]).to_pandas()
             
@@ -101,7 +119,7 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
                 p_data = search_res.json().get("data", [])
                 if p_data:
                     player_id = p_data[0]["id"]
-                    stats_res = requests.get(f"{BDL_BASE_NFL}/stats", headers=headers, params={"player_ids[]": player_id, "per_page": 20}, timeout=TIMEOUT)
+                    stats_res = requests.get(f"{BDL_BASE_NFL}/stats", headers=headers, params={"player_ids[]": player_id, "per_page": 20, "seasons[]": base_year}, timeout=TIMEOUT)
                     if stats_res.status_code == 200:
                         stats = stats_res.json().get("data", [])
                         rows = []
@@ -183,12 +201,18 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
     return pd.DataFrame(), f"No active game logs found on nflverse, BallDontLie, or ESPN for '{raw_input}'."
 
 
-def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player logs from BallDontLie API with corrected base URL and season filter."""
+def fetch_nba_player_logs(player_name: str, season: int | str = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch NBA player logs from BallDontLie API with corrected base URL and '2026-27' season formatting."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
     clean_name = player_name.strip()
+    formatted_season = format_season(season)  # Returns "2026-27"
+    try:
+        start_year = int(str(season)[:4])
+    except ValueError:
+        start_year = 2026
+
     bdl_key = _secret("BALLDONTLIE_API_KEY")
 
     if bdl_key:
@@ -202,7 +226,7 @@ def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
                     stats_res = requests.get(
                         f"{BDL_BASE_NBA}/stats",
                         headers=headers,
-                        params={"player_ids[]": player_id, "per_page": 25, "seasons[]": season},
+                        params={"player_ids[]": player_id, "per_page": 25, "seasons[]": start_year},
                         timeout=TIMEOUT,
                     )
                     if stats_res.status_code == 200:
@@ -232,4 +256,4 @@ def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
         except Exception:
             pass
 
-    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}' (Verify BALLDONTLIE_API_KEY)."
+    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}' for season {formatted_season} (Verify BALLDONTLIE_API_KEY)."
