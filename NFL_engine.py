@@ -1,53 +1,31 @@
-"""NFL & NBA Monte Carlo Prop Evaluator Engine."""
+"""NFL Monte Carlo Prop Evaluator Engine."""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from sports_data import fetch_nba_player_logs, fetch_nfl_player_logs
+from sports_data import fetch_nfl_player_logs
 
-SPORTS: Tuple[str, ...] = ("NFL", "NBA")
 SOURCES: Tuple[str, ...] = ("Model (EWMA mean)", "My mean", "My median")
 DEVIG_METHODS: Tuple[str, ...] = ("Multiplicative", "Additive")
 
-DEFAULTS: Dict[str, Tuple[str, float]] = {
-    "NFL": ("Aaron Rodgers", 244.5),
-    "NBA": ("Jayson Tatum", 26.5),
-}
+DEFAULTS: Tuple[str, float] = ("Aaron Rodgers", 244.5)
 
-STATS: Dict[str, List[str]] = {
-    "NFL": [
-        "Passing Yards",
-        "Pass Completions",
-        "Pass Attempts",
-        "Passing TDs",
-        "Rushing Yards",
-        "Rushing Attempts",
-        "Receiving Yards",
-        "Receptions",
-        "Interceptions",
-    ],
-    "NBA": [
-        "Points",
-        "Rebounds",
-        "Assists",
-        "3-Pointers Made",
-        "Pts + Reb + Ast",
-        "Steals",
-        "Blocks",
-    ],
-}
+STATS: List[str] = [
+    "Passing Yards",
+    "Pass Completions",
+    "Pass Attempts",
+    "Passing TDs",
+    "Rushing Yards",
+    "Rushing Attempts",
+    "Receiving Yards",
+    "Receptions",
+    "Interceptions",
+]
 
-# Mapping friendly UI stat labels to actual backend dataframe column keys (case-insensitive)
+# Mapping friendly UI stat labels to actual backend dataframe column keys
 STAT_COLUMN_MAP: Dict[str, List[str]] = {
-    "POINTS": ["PTS", "POINTS"],
-    "REBOUNDS": ["REB", "REBOUNDS", "TRB"],
-    "ASSISTS": ["AST", "ASSISTS"],
-    "3-POINTERS MADE": ["FG3M", "3PM", "THREE_POINTERS_MADE", "3-POINTERS MADE"],
-    "PTS + REB + AST": ["PTS+REB+AST", "PRA", "PTS + REB + AST"],
-    "STEALS": ["STL", "STEALS"],
-    "BLOCKS": ["BLK", "BLOCKS"],
     "PASSING YARDS": ["YDS", "PASSING YARDS", "PASS_YDS"],
     "PASS COMPLETIONS": ["CMP", "PASS COMPLETIONS", "PASS_CMP"],
     "PASS ATTEMPTS": ["ATT", "PASS ATTEMPTS", "PASS_ATT"],
@@ -59,14 +37,11 @@ STAT_COLUMN_MAP: Dict[str, List[str]] = {
     "INTERCEPTIONS": ["INT", "INTERCEPTIONS"],
 }
 
+def stat_options() -> List[str]:
+    return STATS
 
-def stat_options(league: str) -> List[str]:
-    return STATS.get(league.upper(), [])
-
-
-def default_season(league: str) -> int:
+def default_season() -> int:
     return 2026
-
 
 def american_to_implied_prob(american_odds: float) -> float:
     try:
@@ -77,7 +52,6 @@ def american_to_implied_prob(american_odds: float) -> float:
     except Exception:
         return 52.4
 
-
 def calculate_ewma(stats: np.ndarray, decay: float = 0.8) -> float:
     if len(stats) == 0:
         return 0.0
@@ -85,9 +59,7 @@ def calculate_ewma(stats: np.ndarray, decay: float = 0.8) -> float:
     weights /= weights.sum()
     return float(np.sum(stats * weights))
 
-
-def evaluate_prop_multisport(
-    league: str,
+def evaluate_prop(
     player_name: str,
     stat_category: str,
     line: float,
@@ -96,12 +68,9 @@ def evaluate_prop_multisport(
     projection_source: str = "Model (EWMA mean)",
     season: int = 2026,
 ) -> Dict[str, Any]:
-    league = league.upper()
+    
     try:
-        if league == "NFL":
-            df, err = fetch_nfl_player_logs(player_name, season)
-        else:
-            df, err = fetch_nba_player_logs(player_name, season)
+        df, err = fetch_nfl_player_logs(player_name, season)
 
         if err or df is None or df.empty:
             return {"error": err or f"No game logs found for '{player_name}'."}
@@ -109,13 +78,8 @@ def evaluate_prop_multisport(
         # Clean and uppercase column headers
         df.columns = [c.upper().strip() for c in df.columns]
 
-        # Handle composite stats (like PRA) if they aren't explicitly pre-calculated in the dataframe
         stat_upper = stat_category.upper().strip()
-        if stat_upper == "PTS + REB + AST" and "PTS+REB+AST" not in df.columns:
-            if all(col in df.columns for col in ["PTS", "REB", "AST"]):
-                df["PTS+REB+AST"] = df["PTS"].astype(float) + df["REB"].astype(float) + df["AST"].astype(float)
-
-        # Map UI stat category to actual dataframe column
+        
         target_col = None
         if stat_upper in df.columns:
             target_col = stat_upper
