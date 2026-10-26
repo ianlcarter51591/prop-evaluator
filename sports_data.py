@@ -9,10 +9,15 @@ import nflreadpy as nfl
 from typing import Tuple, Optional, Dict, Any
 
 BDL_BASE_NFL = "https://api.balldontlie.io/nfl/v1"
-BDL_BASE_NBA = "https://api.bigballsdata.com/v1/matches?sport=basketball&league=nba&limit=3"
+BDL_BASE_NBA = "https://api.balldontlie.io/v1"
 TIMEOUT = 8
 
 def _secret(name: str) -> str:
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
     return os.environ.get(name, "").strip()
 
 def parse_val(v) -> float:
@@ -47,14 +52,11 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
             raw_stats = nfl.load_player_stats(seasons=[s_year]).to_pandas()
             
             if not raw_stats.empty:
-                # Add normalized columns for player_name and player_display_name
                 raw_stats["c_name"] = raw_stats["player_name"].astype(str).apply(_clean_name)
                 raw_stats["c_disp"] = raw_stats["player_display_name"].astype(str).apply(_clean_name) if "player_display_name" in raw_stats.columns else raw_stats["c_name"]
 
-                # Match against clean name or clean display name
                 p_df = raw_stats[(raw_stats["c_name"] == target_clean) | (raw_stats["c_disp"] == target_clean)].copy()
                 
-                # Secondary attempt: check if last name matches when full string match is empty
                 if p_df.empty and " " in target_clean:
                     last_name = target_clean.split()[-1]
                     if len(last_name) > 2:
@@ -89,7 +91,7 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
         except Exception:
             pass
 
-    # 2. Secondary Source: BallDontLie API
+    # 2. Secondary Source: BallDontLie API (NFL)
     bdl_key = _secret("BALLDONTLIE_API_KEY")
     if bdl_key:
         try:
@@ -181,8 +183,8 @@ def fetch_nfl_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.Data
     return pd.DataFrame(), f"No active game logs found on nflverse, BallDontLie, or ESPN for '{raw_input}'."
 
 
-def fetch_nba_player_logs(player_name: str, season: int = 2025) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Fetch NBA player logs from BallDontLie."""
+def fetch_nba_player_logs(player_name: str, season: int = 2026) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Fetch NBA player logs from BallDontLie API with corrected base URL and season filter."""
     if not player_name or not player_name.strip():
         return pd.DataFrame(), "Please enter a player name."
 
@@ -197,7 +199,12 @@ def fetch_nba_player_logs(player_name: str, season: int = 2025) -> Tuple[pd.Data
                 p_data = search_res.json().get("data", [])
                 if p_data:
                     player_id = p_data[0]["id"]
-                    stats_res = requests.get(f"{BDL_BASE_NBA}/stats", headers=headers, params={"player_ids[]": player_id, "per_page": 20}, timeout=TIMEOUT)
+                    stats_res = requests.get(
+                        f"{BDL_BASE_NBA}/stats",
+                        headers=headers,
+                        params={"player_ids[]": player_id, "per_page": 25, "seasons[]": season},
+                        timeout=TIMEOUT,
+                    )
                     if stats_res.status_code == 200:
                         stats = stats_res.json().get("data", [])
                         rows = []
@@ -225,4 +232,4 @@ def fetch_nba_player_logs(player_name: str, season: int = 2025) -> Tuple[pd.Data
         except Exception:
             pass
 
-    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}'."
+    return pd.DataFrame(), f"No active NBA game logs found on BallDontLie for '{clean_name}' (Verify BALLDONTLIE_API_KEY)."
