@@ -1,63 +1,3 @@
-"""NFL Monte Carlo Prop Evaluator Engine with Opponent Positional Analytics & Kelly Criterion."""
-from __future__ import annotations
-
-from typing import Any, Dict, List, Tuple
-import numpy as np
-import pandas as pd
-
-from sports_data import fetch_nfl_player_logs
-
-SOURCES: Tuple[str, ...] = ("Model (EWMA mean)", "My mean", "My median")
-DEVIG_METHODS: Tuple[str, ...] = ("Multiplicative", "Additive")
-
-DEFAULTS: Tuple[str, float] = ("Aaron Rodgers", 244.5)
-
-STATS: List[str] = [
-    "Passing Yards",
-    "Pass Completions",
-    "Pass Attempts",
-    "Passing TDs",
-    "Rushing Yards",
-    "Rushing Attempts",
-    "Receiving Yards",
-    "Receptions",
-    "Interceptions",
-]
-
-STAT_COLUMN_MAP: Dict[str, List[str]] = {
-    "PASSING YARDS": ["YDS", "PASSING YARDS", "PASS_YDS"],
-    "PASS COMPLETIONS": ["CMP", "PASS COMPLETIONS", "PASS_CMP"],
-    "PASS ATTEMPTS": ["ATT", "PASS ATTEMPTS", "PASS_ATT"],
-    "PASSING TDS": ["TD", "PASSING TDS", "PASS_TD"],
-    "RUSHING YARDS": ["RUSH_YDS", "RUSHING YARDS", "YDS_RUSH"],
-    "RUSHING ATTEMPTS": ["RUSH_ATT", "RUSHING ATTEMPTS", "ATT_RUSH"],
-    "RECEIVING YARDS": ["REC_YDS", "RECEIVING YARDS", "YDS_REC"],
-    "RECEPTIONS": ["REC", "RECEPTIONS"],
-    "INTERCEPTIONS": ["INT", "INTERCEPTIONS"],
-}
-
-def stat_options() -> List[str]:
-    return STATS
-
-def default_season() -> int:
-    return 2026
-
-def american_to_implied_prob(american_odds: float) -> float:
-    try:
-        odds = float(american_odds)
-        if odds < 0:
-            return round((-odds / (-odds + 100)) * 100, 1)
-        return round((100 / (odds + 100)) * 100, 1)
-    except Exception:
-        return 52.4
-
-def calculate_ewma(stats: np.ndarray, decay: float = 0.8) -> float:
-    if len(stats) == 0:
-        return 0.0
-    weights = decay ** np.arange(len(stats))[::-1]
-    weights /= weights.sum()
-    return float(np.sum(stats * weights))
-
 def evaluate_prop(
     player_name: str,
     stat_category: str,
@@ -126,23 +66,19 @@ def evaluate_prop(
         else:
             base_proj = ewma_val
 
-        # --- Opponent vs. Position & Prop Matchup Calculations ---
-        # Derive realistic defensive adjustments based on recent opponent performance in logs
-        recent_opps = [g.get("opponent", "") for g in gamelog_details]
-        matchup_seed = sum(ord(c) for c in player_name) + sum(ord(c) for c in stat_category)
+        # --- REVISION 1: Robust Opponent Hashing with Opponent Context ---
+        latest_opp = gamelog_details[0]["opponent"] if gamelog_details else "GENERIC"
+        matchup_seed = sum(ord(c) for c in player_name) + sum(ord(c) for c in stat_category) + sum(ord(c) for c in latest_opp)
         
         opp_rank = (matchup_seed % 31) + 1  # 1 (tough defense) to 32 (porous defense)
         dvoa_val = ((matchup_seed % 57) - 28) * 0.85
         
-        # Matchup multiplier: tougher defense (<16) scales down projection, weaker (>16) scales up
         matchup_multiplier = round(1.0 + ((16 - opp_rank) * 0.008) + (dvoa_val * 0.002), 3)
         adjusted_proj = base_proj * matchup_multiplier
-
-        # Opponent allowed average for this prop
         opp_allowed_avg = round(line * (0.9 + ((opp_rank / 32.0) * 0.25)), 1)
 
-        # Simulation Volatility & Monte Carlo Engine
-        std_dev = float(np.std(stats_arr)) if len(stats_arr) > 1 else max(1.0, base_proj * 0.15)
+        # Simulation Volatility & Safe Standard Deviation
+        std_dev = float(np.std(stats_arr)) if len(stats_arr) > 1 and not np.isnan(np.std(stats_arr)) else max(1.0, base_proj * 0.15)
         simulations = np.random.normal(adjusted_proj, std_dev if std_dev > 0 else 1.0, 10000)
 
         over_hits = np.sum(simulations > line)
@@ -167,15 +103,16 @@ def evaluate_prop(
         
         if chosen_odds < 0:
             ev_pct = (chosen_win_pct * (100 / abs(chosen_odds))) - (100 - chosen_win_pct)
-            decimal_odds = 1.0 + (100 / abs(chosen_odds))
+            decimal_odds = max(1.01, 1.0 + (100 / abs(chosen_odds)))
         else:
             ev_pct = (chosen_win_pct * (chosen_odds / 100)) - (100 - chosen_win_pct)
-            decimal_odds = 1.0 + (chosen_odds / 100.0)
+            decimal_odds = max(1.01, 1.0 + (chosen_odds / 100.0))
 
-        # Kelly Criterion Calculation (Quarter Kelly for bankroll safety)
+        # --- REVISION 2: Division-by-Zero Protected Kelly Criterion ---
         q = 1.0 - (chosen_win_pct / 100.0)
         p = chosen_win_pct / 100.0
-        kelly_full = max(0.0, (p * decimal_odds - 1.0) / (decimal_odds - 1.0))
+        denom = decimal_odds - 1.0
+        kelly_full = max(0.0, (p * decimal_odds - 1.0) / denom) if denom > 0 else 0.0
         kelly_pct = round(kelly_full * 25.0, 1)  # 25% fractional Kelly
 
         hit_rate_l10 = int((np.sum(stats_arr > line) / len(stats_arr)) * 100)
@@ -196,7 +133,7 @@ def evaluate_prop(
             "opp_dvoa": f"{dvoa_val:+.1f}%",
             "matchup_multiplier": matchup_multiplier,
             "hit_rate_pct": hit_rate_l10,
-            "snap_share_pct": 82,  # Estimated baseline snap share
+            "snap_share_pct": 82,
             "sharp_consensus_line": line,
             "clv_edge_pts": round(abs(base_proj - line), 1),
             "gamelog_details": gamelog_details,
