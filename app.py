@@ -149,6 +149,7 @@ def sync_populate_to_widgets(stat_category: str, player: str, line: float, over:
     ss["input_line"] = float(line)
     ss["input_over"] = int(round(over))
     ss["input_under"] = int(round(under))
+    
     ss["ran_eval"] = True
 
 def render_live_panel() -> None:
@@ -264,7 +265,7 @@ def main() -> None:
             m3.markdown(f'<div class="metric-box"><div class="metric-label">BEST SIDE</div><div class="metric-value">{res["best_side"]}</div></div>', unsafe_allow_html=True)
             m4.markdown(f'<div class="metric-box"><div class="metric-label">FAIR ODDS</div><div class="metric-value">{res["fair_odds"]:+d}</div></div>', unsafe_allow_html=True)
             m5.markdown(f'<div class="metric-box"><div class="metric-label">EV %</div><div class="metric-value-green">+{res["ev_pct"]:.1f}%</div></div>', unsafe_allow_html=True)
-            m6.markdown(f'<div class="metric-box"><div class="metric-label">KELLY SIZNG</div><div class="metric-value-green">{res["kelly_pct"]}%</div></div>', unsafe_allow_html=True)
+            m6.markdown(f'<div class="metric-box"><div class="metric-label">KELLY SIZING</div><div class="metric-value-green">{res["kelly_pct"]}%</div></div>', unsafe_allow_html=True)
 
             # --- Opponent Matchup & Defensive Context Layer ---
             st.markdown("### 🛡️ Opponent Matchup & Defensive Context")
