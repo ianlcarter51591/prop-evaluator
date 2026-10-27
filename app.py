@@ -1,5 +1,4 @@
-"""NFL Prop Evaluator: Direct Widget Syncing with Dynamic Matchup & Market Analytics."""
-import hashlib
+"""NFL Prop Evaluator: Advanced Monte Carlo & Opponent Matchup Analytics Platform."""
 import os
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,6 +6,7 @@ import streamlit as st
 
 from multi_sport_engine import (
     DEFAULTS,
+    SOURCES,
     evaluate_prop,
     stat_options,
 )
@@ -31,17 +31,13 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Pure White Main Background */
     .stApp {
         background-color: #ffffff !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-
     [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
         display: none !important;
     }
-
-    /* Powder Blue Container Boxes, Cards & Expanders */
     .vision-card, 
     [data-testid="stVerticalBlockBorderWrapper"], 
     [data-testid="stExpander"], 
@@ -52,31 +48,24 @@ st.markdown(
         box-shadow: 0 4px 14px rgba(0, 117, 255, 0.08) !important;
     }
     .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
-
-    /* Fix Expander Header Title Text */
     [data-testid="stExpander"] summary, 
     [data-testid="stExpander"] summary * {
         color: #0f172a !important;
         font-weight: 800 !important;
         font-size: 16px !important;
     }
-
-    /* Header Text Styling */
     .vision-title {
         color: #0369a1 !important;
         font-size: 26px;
         font-weight: 900;
         margin: 0;
     }
-
     .vision-sub {
         color: #0f172a !important;
         font-size: 13px;
         font-weight: 600;
         margin-top: 4px;
     }
-
-    /* Powder Blue Metric Boxes */
     [data-testid="stMetric"], .metric-box {
         background: #b9e6ff !important;
         border: 2px solid #7dd3fc !important;
@@ -101,14 +90,10 @@ st.markdown(
         font-size: 24px !important;
         font-weight: 900 !important;
     }
-
-    /* Text & Label Overrides */
     label, p, span, div[data-testid="stMarkdownContainer"] p {
         color: #0f172a !important;
         font-weight: 700 !important;
     }
-
-    /* Input Fields & Dropdowns */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #0f172a !important;
         color: #ffffff !important;
@@ -116,12 +101,9 @@ st.markdown(
         border: 2px solid #0284c7 !important;
         font-weight: 600 !important;
     }
-
     div[data-baseweb="select"] * {
         color: #ffffff !important;
     }
-
-    /* Action Buttons */
     .stButton>button, [data-testid="stFormSubmitButton"]>button {
         background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
         color: #ffffff !important;
@@ -136,8 +118,6 @@ st.markdown(
         color: #ffffff !important;
         font-weight: 900 !important;
     }
-
-    /* Data Table Styling */
     [data-testid="stDataFrame"] {
         background-color: #ffffff !important;
         border: 2px solid #7dd3fc !important;
@@ -156,47 +136,8 @@ def _secret(name: str) -> str:
         pass
     return os.environ.get(name, "").strip()
 
-def get_dynamic_matchup_metrics(player_name: str, stat_category: str, line: float):
-    """Generate dynamic, deterministic metrics unique to the player and stat combo."""
-    seed_str = f"{player_name}-{stat_category}-{line}"
-    hash_val = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
-    
-    # Generate unique rank (1 to 32)
-    rank = (hash_val % 31) + 1
-    
-    # Generate DVOA percentage (-28.5% to +28.5%)
-    dvoa_val = ((hash_val % 57) - 28) * 0.9
-    dvoa_str = f"{dvoa_val:+.1f}%"
-    
-    # Allowed average based on line
-    allowed = round(line * (0.85 + ((hash_val % 30) * 0.01)), 1)
-    
-    # Matchup multiplier
-    multiplier = round(1.0 + (dvoa_val * 0.003), 2)
-    
-    # Hit rate & Snap share
-    hit_rate = 50 + (hash_val % 35)
-    snap_share = 70 + (hash_val % 28)
-    
-    # Sharp consensus and CLV
-    sharp_line = round(line + (((hash_val % 3) - 1) * 0.5), 1)
-    clv_edge = round(0.2 + ((hash_val % 6) * 0.1), 1)
-    
-    return {
-        "opp_rank": rank,
-        "opp_allowed": allowed,
-        "opp_dvoa": dvoa_str,
-        "matchup_mult": max(0.85, min(1.25, multiplier)),
-        "hit_rate": hit_rate,
-        "snap_share": snap_share,
-        "sharp_line": sharp_line,
-        "clv_edge": clv_edge
-    }
-
 def sync_populate_to_widgets(stat_category: str, player: str, line: float, over: float, under: float) -> None:
-    """Directly update form widget state keys so inputs immediately reflect populated data."""
     ss = st.session_state
-    
     ss["player_val"] = player
     ss["stat_val"] = stat_category
     ss["line_val"] = float(line)
@@ -208,7 +149,6 @@ def sync_populate_to_widgets(stat_category: str, player: str, line: float, over:
     ss["input_line"] = float(line)
     ss["input_over"] = int(round(over))
     ss["input_under"] = int(round(under))
-    
     ss["ran_eval"] = True
 
 def render_live_panel() -> None:
@@ -275,7 +215,6 @@ def main() -> None:
     ss = st.session_state
     def_player, def_line = DEFAULTS
     
-    # Initialize form widget state keys if missing
     if "input_player" not in ss:
         ss["input_player"] = ss.get("player_val", def_player)
     if "input_stat" not in ss:
@@ -296,9 +235,10 @@ def main() -> None:
         
         line_val = c3.number_input("Line", step=0.5, key="input_line")
 
-        c4, c5 = st.columns(2)
+        c4, c5, c6 = st.columns(3)
         over_odds = c4.number_input("Over Odds", key="input_over")
         under_odds = c5.number_input("Under Odds", key="input_under")
+        proj_source = c6.selectbox("Projection Model", SOURCES, key="input_source")
 
         submitted = st.form_submit_button("⚡ Evaluate Prop")
 
@@ -309,6 +249,7 @@ def main() -> None:
             line=line_val,
             over_odds=over_odds,
             under_odds=under_odds,
+            projection_source=proj_source,
         )
 
         if "error" in res:
@@ -318,30 +259,28 @@ def main() -> None:
             
             # Primary Evaluation Metrics
             m1, m2, m3, m4, m5, m6 = st.columns(6)
-            m1.markdown(f'<div class="metric-box"><div class="metric-label">MEAN</div><div class="metric-value">{res["projection_mean"]:.2f}</div></div>', unsafe_allow_html=True)
-            m2.markdown(f'<div class="metric-box"><div class="metric-label">MEDIAN</div><div class="metric-value">{res["projection_median"]:.2f}</div></div>', unsafe_allow_html=True)
+            m1.markdown(f'<div class="metric-box"><div class="metric-label">ADJ PROJ</div><div class="metric-value">{res["adjusted_projection"]:.2f}</div></div>', unsafe_allow_html=True)
+            m2.markdown(f'<div class="metric-box"><div class="metric-label">EWMA MEAN</div><div class="metric-value">{res["projection_ewma"]:.2f}</div></div>', unsafe_allow_html=True)
             m3.markdown(f'<div class="metric-box"><div class="metric-label">BEST SIDE</div><div class="metric-value">{res["best_side"]}</div></div>', unsafe_allow_html=True)
             m4.markdown(f'<div class="metric-box"><div class="metric-label">FAIR ODDS</div><div class="metric-value">{res["fair_odds"]:+d}</div></div>', unsafe_allow_html=True)
-            m5.markdown(f'<div class="metric-box"><div class="metric-label">EDGE VS MKT</div><div class="metric-value-green">+{res["edge_vs_market"]:.1f}%</div></div>', unsafe_allow_html=True)
-            m6.markdown(f'<div class="metric-box"><div class="metric-label">EV</div><div class="metric-value-green">+{res["ev_pct"]:.1f}%</div></div>', unsafe_allow_html=True)
+            m5.markdown(f'<div class="metric-box"><div class="metric-label">EV %</div><div class="metric-value-green">+{res["ev_pct"]:.1f}%</div></div>', unsafe_allow_html=True)
+            m6.markdown(f'<div class="metric-box"><div class="metric-label">KELLY SIZNG</div><div class="metric-value-green">{res["kelly_pct"]}%</div></div>', unsafe_allow_html=True)
 
-            # --- Dynamically Computed Matchup & Defensive Context ---
-            dyn = get_dynamic_matchup_metrics(res['player_name'], stat_category, line_val)
-
+            # --- Opponent Matchup & Defensive Context Layer ---
             st.markdown("### 🛡️ Opponent Matchup & Defensive Context")
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.markdown(f'<div class="metric-box"><div class="metric-label">OPP RANK VS POS</div><div class="metric-value">#{dyn["opp_rank"]}</div></div>', unsafe_allow_html=True)
-            mc2.markdown(f'<div class="metric-box"><div class="metric-label">ALLOWED / GAME</div><div class="metric-value">{dyn["opp_allowed"]:.1f}</div></div>', unsafe_allow_html=True)
-            mc3.markdown(f'<div class="metric-box"><div class="metric-label">DEF DVOA</div><div class="metric-value">{dyn["opp_dvoa"]}</div></div>', unsafe_allow_html=True)
-            mc4.markdown(f'<div class="metric-box"><div class="metric-label">MATCHUP ADJUSTMENT</div><div class="metric-value-green">{dyn["matchup_mult"]:.2f}x</div></div>', unsafe_allow_html=True)
+            mc1.markdown(f'<div class="metric-box"><div class="metric-label">OPP RANK VS POS</div><div class="metric-value">#{res["opp_rank_vs_pos"]}</div></div>', unsafe_allow_html=True)
+            mc2.markdown(f'<div class="metric-box"><div class="metric-label">ALLOWED / GAME</div><div class="metric-value">{res["opp_allowed_avg"]:.1f}</div></div>', unsafe_allow_html=True)
+            mc3.markdown(f'<div class="metric-box"><div class="metric-label">DEF DVOA</div><div class="metric-value">{res["opp_dvoa"]}</div></div>', unsafe_allow_html=True)
+            mc4.markdown(f'<div class="metric-box"><div class="metric-label">MATCHUP MULTIPLIER</div><div class="metric-value-green">{res["matchup_multiplier"]:.3f}x</div></div>', unsafe_allow_html=True)
 
-            # --- Dynamically Computed Hit Rate & Sharp Benchmarks ---
-            st.markdown("### 📈 Hit Rate, Volume & Sharp Benchmarks")
+            # --- Hit Rate & Sharp Benchmarks Layer ---
+            st.markdown("### 📈 Consistency & Sharp Benchmarks")
             h1, h2, h3, h4 = st.columns(4)
-            h1.markdown(f'<div class="metric-box"><div class="metric-label">HIT RATE (L10)</div><div class="metric-value">{dyn["hit_rate"]}%</div></div>', unsafe_allow_html=True)
-            h2.markdown(f'<div class="metric-box"><div class="metric-label">SNAP / ROUTE %</div><div class="metric-value">{dyn["snap_share"]}%</div></div>', unsafe_allow_html=True)
-            h3.markdown(f'<div class="metric-box"><div class="metric-label">SHARP CONSENSUS</div><div class="metric-value">{dyn["sharp_line"]}</div></div>', unsafe_allow_html=True)
-            h4.markdown(f'<div class="metric-box"><div class="metric-label">CLV VALUE</div><div class="metric-value-green">+{dyn["clv_edge"]} pts</div></div>', unsafe_allow_html=True)
+            h1.markdown(f'<div class="metric-box"><div class="metric-label">HIT RATE (L10)</div><div class="metric-value">{res["hit_rate_pct"]}%</div></div>', unsafe_allow_html=True)
+            h2.markdown(f'<div class="metric-box"><div class="metric-label">SNAP / ROUTE %</div><div class="metric-value">{res["snap_share_pct"]}%</div></div>', unsafe_allow_html=True)
+            h3.markdown(f'<div class="metric-box"><div class="metric-label">SHARP CONSENSUS</div><div class="metric-value">{res["sharp_consensus_line"]}</div></div>', unsafe_allow_html=True)
+            h4.markdown(f'<div class="metric-box"><div class="metric-label">EDGE VS LINE</div><div class="metric-value-green">+{res["clv_edge_pts"]} pts</div></div>', unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown("### 📊 Game Log Performance")
