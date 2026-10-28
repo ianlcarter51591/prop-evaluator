@@ -284,6 +284,24 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
         st.dataframe(board, use_container_width=True, hide_index=True)
 
 
+def render_contextual_reality_check() -> None:
+    """Render a pre-flight contextual checklist to manually verify usage, schedule, and line movement."""
+    with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
+        st.markdown(
+            "Before locking in your bet, pass the model output through these real-world filters:"
+        )
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.checkbox("1. Secure Volume & Usage", value=True, help="Does the player command high snap/touch/shot volume?")
+        with col2:
+            st.checkbox("2. Clean Schedule Spot", value=True, help="No unmanaged fatigue, rest disadvantages, or blowout risk.")
+        with col3:
+            st.checkbox("3. Sharp Line Movement", value=True, help="Line movement supports the side or aligns with sharp money.")
+            
+        st.caption("💡 *Note: High-volume players insulate you from single-game variance, while back-to-backs lean toward Unders due to tired legs.*")
+
+
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
     """Metric cards, matchup panel, notes, and the game-log chart."""
     st.markdown(f"## {res['player_name']} | {stat_category}")
@@ -306,6 +324,10 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     for w in res["warnings"]:
         st.caption(f"⚠️ {w}")
     st.markdown("---")
+    
+    # Contextual Reality Check Card
+    render_contextual_reality_check()
+    
     st.markdown("### 📊 Game Log Performance")
     st.caption("Last 10 games (faded bars = last season). Dashed blue = line, dotted orange = model projection.")
     gl = pd.DataFrame(res["gamelog_details"])
