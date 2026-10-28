@@ -96,6 +96,11 @@ st.markdown(
         text-transform: uppercase !important;
         letter-spacing: 0.5px !important;
     }
+    .metric-value-green {
+        color: #15803d !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+    }
 
     /* Text & Label Overrides */
     label, p, span, div[data-testid="stMarkdownContainer"] p {
@@ -158,7 +163,7 @@ def _secret(name: str) -> str:
 
 
 def _to_american(x: float) -> int:
-    """Coerce a price to American odds."""
+    """Coerce a price to American odds (decimal odds such as 1.91 are converted instead of truncated to 1 or 2)."""
     x = float(x)
     if abs(x) >= 100:
         return int(round(x))
@@ -168,7 +173,7 @@ def _to_american(x: float) -> int:
 
 
 def load_k_file() -> Optional[Dict[str, float]]:
-    """Saved calibrated matchup weights."""
+    """Saved calibrated matchup weights (best effort; ephemeral on Streamlit Cloud)."""
     try:
         if os.path.exists(K_PATH):
             with open(K_PATH) as fh:
@@ -179,7 +184,7 @@ def load_k_file() -> Optional[Dict[str, float]]:
 
 
 def save_k_file(k: Optional[Dict[str, float]]) -> None:
-    """Persist calibrated weights."""
+    """Persist (or clear) the calibrated weights."""
     try:
         if k is None:
             if os.path.exists(K_PATH):
@@ -201,7 +206,7 @@ def sync_populate_to_widgets(stat_category: str, player: str, line: float, over:
 
 
 def render_live_panel() -> None:
-    """Odds API loader: games -> board -> populate form."""
+    """Odds API loader (unchanged flow): games -> board -> populate the form."""
     ss = st.session_state
     api_key = _secret("ODDS_API_KEY")
     with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
@@ -238,7 +243,7 @@ def render_live_panel() -> None:
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
-    """Render metric card with explicit color styling."""
+    """Render one metric card; tone in {'neutral','good','bad'}."""
     color = {"neutral": "#0369a1", "good": "#15803d", "bad": "#b91c1c"}[tone]
     col.markdown(
         f'<div class="metric-box"><div class="metric-label">{label}</div>'
@@ -253,33 +258,20 @@ def _tone(x: float) -> str:
 
 
 def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
-    """Real opponent-vs-position panel with color-coded target vs pass ranking."""
+    """Real opponent-vs-position panel (replaces the old hash-generated placeholders)."""
     m = res.get("matchup")
     st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
     if not m:
         st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
         return
     venue = "" if m["home"] is None else ("vs " if m["home"] else "@ ")
-    wk_val = m.get('week')
-    wk = f" · Wk {wk_val}" if wk_val else ""
-    
-    # Target (soft defense: rank 1-10) = Green | Pass (tough defense: rank >= 23) = Red | Neutral = Blue
-    rank = m["rank"]
-    n_teams = m["n_teams"]
-    if rank <= 10:
-        rank_tone = "good"
-    elif rank >= n_teams - 9:
-        rank_tone = "bad"
-    else:
-        rank_tone = "neutral"
-
+    wk = f" · Wk {m['week']}" if m.get("week") else ""
     c = st.columns(5)
     _metric(c[0], "OPPONENT", f"{venue}{m['opponent']}{wk}")
-    _metric(c[1], f"RANK VS {m['pos']} (1 = SOFTEST)", f"#{rank} of {n_teams}", rank_tone)
+    _metric(c[1], f"RANK VS {m['pos']} (1 = SOFTEST)", f"#{m['rank']} of {m['n_teams']}", "good" if m["rank"] <= 10 else "bad" if m["rank"] >= m["n_teams"] - 9 else "neutral")
     _metric(c[2], f"{stat_category.upper()} ALLOWED / GM", f"{m['allowed']:.1f}")
     _metric(c[3], "LEAGUE AVG / INDEX", f"{m['league']:.1f} · {m['index']:.2f}x")
     _metric(c[4], "MATCHUP ADJ", f"x{m['mult']:.3f}", "good" if m["mult"] > 1.0005 else "bad" if m["mult"] < 0.9995 else "neutral")
-    
     src = "backtested" if m["calibrated"] else "default assumption; calibrate in the Matchup Backtest tab"
     notes = [f"Allowed to {m['pos']}s per game, shrunk toward last season ({m['games']} games this season). Weight k = {m['k']:.2f} ({src})."]
     if m.get("rest") is not None and m.get("opp_rest") is not None:
@@ -293,9 +285,12 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
 
 
 def render_contextual_reality_check() -> None:
-    """Render pre-flight contextual checklist."""
+    """Render a pre-flight contextual checklist to manually verify usage, schedule, and line movement."""
     with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
-        st.markdown("Before locking in your bet, pass the model output through these real-world filters:")
+        st.markdown(
+            "Before locking in your bet, pass the model output through these real-world filters:"
+        )
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             st.checkbox("1. Secure Volume & Usage", value=True, help="Does the player command high snap/touch/shot volume?")
@@ -303,11 +298,12 @@ def render_contextual_reality_check() -> None:
             st.checkbox("2. Clean Schedule Spot", value=True, help="No unmanaged fatigue, rest disadvantages, or blowout risk.")
         with col3:
             st.checkbox("3. Sharp Line Movement", value=True, help="Line movement supports the side or aligns with sharp money.")
+            
         st.caption("💡 *Note: High-volume players insulate you from single-game variance, while back-to-backs lean toward Unders due to tired legs.*")
 
 
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
-    """Metric cards, matchup panel, notes, and game-log chart."""
+    """Metric cards, matchup panel, notes, and the game-log chart."""
     st.markdown(f"## {res['player_name']} | {stat_category}")
     st.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
     c = st.columns(6)
@@ -317,9 +313,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[3], "FAIR ODDS", f"{res['fair_odds']:+d}")
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
-    
     render_matchup(res, stat_category)
-    
     st.markdown("### 📈 Hit Rate & Sizing")
     h = st.columns(5)
     _metric(h[0], "OVER HIT L5 / L10", f"{res['hit5']}/{res['n5']} · {res['hit10']}/{res['n10']}")
@@ -331,6 +325,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
         st.caption(f"⚠️ {w}")
     st.markdown("---")
     
+    # Contextual Reality Check Card
     render_contextual_reality_check()
     
     st.markdown("### 📊 Game Log Performance")
@@ -357,7 +352,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
 
 
 def render_matchup_backtest() -> None:
-    """Calibrate opponent weights."""
+    """Calibrate how much weight the opponent index deserves, using only information available before each game."""
     ss = st.session_state
     st.markdown(
         "Estimates **k** in `stat ÷ player's season average = 1 + k × (opponent index − 1)`, with the opponent index built "
@@ -380,7 +375,8 @@ def render_matchup_backtest() -> None:
     table = ss.get("mbt_table")
     if table is not None and not table.empty:
         st.dataframe(table.round(3), use_container_width=True, hide_index=True)
-        st.caption("K_HAT is the raw estimate, K_EFF is what the model will use. SIGNIFICANT = |K_HAT| ≥ 2 × SE.")
+        st.caption("K_HAT is the raw estimate, K_EFF is what the model will use. SIGNIFICANT = |K_HAT| ≥ 2 × SE. "
+                   "Stats where it's 'no' are still dominated by noise; K_EFF stays close to the default.")
         a, b = st.columns(2)
         if a.button("✅ Apply to model", key="apply_mbt"):
             ss["matchup_k"] = {r.STAT: float(r.K_EFF) for r in table.itertuples()}
