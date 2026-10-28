@@ -232,6 +232,8 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             # Legacy aliases so an older app.py that reads the previous result keys keeps working.
             "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
             "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
+            "base_proj": proj.mu / mult if mult else proj.mu, "projection_ewma": proj.mu / mult if mult else proj.mu,
+            "kelly_pct_legacy": kelly_fraction(p_w, p_l, odds_side) * 100.0,
             "gamelog_details": [{"stat_value": float(v), "season": s, "x_label": f"{d}<br>{o}"}
                                 for v, s, d, o in zip(vals, recent["SEASON_TAG"], recent["DATE"], recent["OPPONENT"])],
         }
