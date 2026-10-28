@@ -1,11 +1,7 @@
 streamlit
-pandas
 numpy
-scipy
+pandas
 plotly
 requests
-nba_api
-jinja2
 nflreadpy
-polars
 pyarrow
