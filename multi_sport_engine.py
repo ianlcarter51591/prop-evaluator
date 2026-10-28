@@ -229,6 +229,9 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             "raw_avg": float(np.mean(vals)) if len(vals) else 0.0, "mu": proj.mu,
             "hit10": int(np.sum(vals > line)), "n10": len(vals), "hit5": int(np.sum(vals[-5:] > line)), "n5": len(vals[-5:]),
             "n_current": proj.n_current, "n_prior": proj.n_prior, "matchup": matchup, "warnings": warnings,
+            # Legacy aliases so an older app.py that reads the previous result keys keeps working.
+            "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
+            "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
             "gamelog_details": [{"stat_value": float(v), "season": s, "x_label": f"{d}<br>{o}"}
                                 for v, s, d, o in zip(vals, recent["SEASON_TAG"], recent["DATE"], recent["OPPONENT"])],
         }
