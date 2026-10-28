@@ -260,7 +260,8 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
         st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
         return
     venue = "" if m["home"] is None else ("vs " if m["home"] else "@ ")
-    wk = f" · Wk {m['week']}" if m.get("week"] else ""
+    wk_val = m.get('week')
+    wk = f" · Wk {wk_val}" if wk_val else ""
     
     # Target (soft defense: rank 1-10) = Green | Pass (tough defense: rank >= 23) = Red | Neutral = Blue
     rank = m["rank"]
