@@ -19,6 +19,7 @@ from odds_api_client import (
     summarize_board,
 )
 from sports_data import NFL_TEAMS, load_weekly
+import live_game
 
 st.set_page_config(
     page_title="NFL Prop Evaluator",
@@ -284,6 +285,57 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
         st.dataframe(board, use_container_width=True, hide_index=True)
 
 
+def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
+    """Live score + clock + box score -> game-script-adjusted verdict (pregame: shows status only)."""
+    ctx = st.session_state.get("last_ctx", {})
+    st.markdown("### 🏈 Live Game Script")
+    spec = live_game.spec_for(stat_category)
+    if spec is None:
+        st.caption("No live game-script model for this stat (combos, INTs and longest-play props are skipped).")
+        return
+    game = live_game.find_game(res["team"])
+    if game is None:
+        st.caption(f"No {res['team']} game found on the current ESPN NFL scoreboard.")
+        return
+    if game.state == "pre":
+        st.caption(f"Pregame ({game.detail}). The live adjustment switches on at kickoff.")
+        return
+    if st.button("🔄 Refresh live score", key="live_refresh"):
+        live_game.refresh()
+        st.rerun()
+    spread = st.number_input(
+        f"Pregame spread for {game.team} (negative = favorite, 0 = ignore)", value=0.0, step=0.5, key="live_spread",
+        help="Removes the script the market already expected, so only the deviation from it moves the projection.",
+    )
+    auto = live_game.fetch_player_stat(game.event_id, res["player_name"], spec)
+    if auto is None:
+        st.caption("No box-score entry found yet; assuming 0 so far. Edit below if that is wrong.")
+    current = st.number_input(
+        f"{stat_category} so far (auto-filled from the box score; edit to override)", value=float(auto or 0.0),
+        step=1.0, key=f"live_cur_{res['player_name']}_{stat_category}_{auto}",
+    )
+    out = live_game.evaluate_live(res["mu"], spec, game, float(spread), float(current), float(ctx["line"]),
+                                  float(ctx["over"]), float(ctx["under"]))
+    word = "Trailing" if out["lean"] < -0.05 else "Leading" if out["lean"] > 0.05 else "Even"
+    flow = "pass-heavy" if out["lean"] < -0.05 else "run-heavy" if out["lean"] > 0.05 else "neutral"
+    c = st.columns(6)
+    _metric(c[0], f"{game.team} vs {game.opp}", f"{game.team_score}-{game.opp_score} · {game.detail}")
+    _metric(c[1], "GAME SCRIPT", f"{word} · {flow}", "good" if out["lean"] > 0.05 else "bad" if out["lean"] < -0.05 else "neutral")
+    _metric(c[2], "SO FAR", f"{current:.1f}")
+    _metric(c[3], "LIVE FINAL PROJ", f"{out['final_proj']:.1f}", _tone(out["final_proj"] - ctx["line"]))
+    _metric(c[4], "LIVE VERDICT" if out["verdict"] == "PLAY" else "LIVE LEAN (PASS)", f"{out['side']} {ctx['line']}", _tone(out["ev_pct"]))
+    _metric(c[5], "LIVE EV / EDGE", f"{out['ev_pct']:+.1f}% / {out['edge_pp']:+.1f}pp", _tone(out["ev_pct"]))
+    d = st.columns(4)
+    _metric(d[0], "P(OVER) / P(UNDER)", f"{out['p_over'] * 100:.1f}% / {out['p_under'] * 100:.1f}%")
+    _metric(d[1], "REMAINING PROJ", f"{out['mu_rem']:.1f}")
+    _metric(d[2], "PACE MULT (REST OF GAME)", f"x{out['mult']:.3f}", _tone(out["mult"] - 1))
+    _metric(d[3], "LIVE KELLY (¼)", f"{out['kelly_pct']:.1f}% BR")
+    st.caption(
+        f"Game-script sensitivities are default assumptions (beta = {spec.beta:+.2f} on remaining volume). "
+        "Compare against a fresh live line: a stale pregame price will overstate the edge."
+    )
+
+
 def render_contextual_reality_check() -> None:
     """Render a pre-flight contextual checklist to manually verify usage, schedule, and line movement."""
     with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
@@ -314,6 +366,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
     render_matchup(res, stat_category)
+    render_live_script(res, stat_category)
     st.markdown("### 📈 Hit Rate & Sizing")
     h = st.columns(5)
     _metric(h[0], "OVER HIT L5 / L10", f"{res['hit5']}/{res['n5']} · {res['hit10']}/{res['n10']}")
@@ -437,7 +490,7 @@ def main() -> None:
                                 under_odds=under_odds, projection_source=proj_source, season=default_season(), opponent=opponent,
                                 matchup_k=ss.get("matchup_k"))
             ss["last_res"] = res
-            ss["last_ctx"] = {"stat": stat_category, "line": float(line_val)}
+            ss["last_ctx"] = {"stat": stat_category, "line": float(line_val), "over": float(over_odds), "under": float(under_odds)}
         res = ss.get("last_res")
         if res:
             if "error" in res:
