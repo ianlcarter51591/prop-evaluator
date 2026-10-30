@@ -14,7 +14,7 @@ Math (all assumptions are named constants you can tune or backtest):
 """
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import requests
@@ -176,6 +176,28 @@ def find_game(team: str) -> Optional[GameState]:
                 home=(mine == "home"),
             )
     return None
+
+
+def scoreboard() -> List[Dict[str, Any]]:
+    """Every game on ESPN's current NFL scoreboard as flat rows (live games first, then upcoming, then final)."""
+    try:
+        data = _get_json(f"{ESPN}/scoreboard")
+    except Exception:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for ev in data.get("events", []):
+        comp = ev["competitions"][0]
+        sides = {c["homeAway"]: c for c in comp["competitors"]}
+        if "home" not in sides or "away" not in sides:
+            continue
+        rows.append({
+            "away": canon(sides["away"]["team"]["abbreviation"]), "home": canon(sides["home"]["team"]["abbreviation"]),
+            "away_score": int(float(sides["away"].get("score", 0) or 0)),
+            "home_score": int(float(sides["home"].get("score", 0) or 0)),
+            "state": ev["status"]["type"]["state"], "detail": ev["status"]["type"].get("shortDetail", ""),
+        })
+    order = {"in": 0, "pre": 1, "post": 2}
+    return sorted(rows, key=lambda r: order.get(r["state"], 3))
 
 
 def _norm_name(name: str) -> str:
