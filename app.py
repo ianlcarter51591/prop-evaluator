@@ -389,8 +389,12 @@ def render_contextual_reality_check() -> None:
 
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
     """Metric cards, matchup panel, notes, and the game-log chart."""
-    st.markdown(f"## {res['player_name']} | {stat_category}")
-    st.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
+    photo_col, title_col = st.columns([1, 6])
+    photo = live_game.headshot_url(res["player_name"])
+    if photo:
+        photo_col.image(photo, width=120)
+    title_col.markdown(f"## {res['player_name']} | {stat_category}")
+    title_col.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
     c = st.columns(6)
     _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
     _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
