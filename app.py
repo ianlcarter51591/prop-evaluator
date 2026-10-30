@@ -285,6 +285,33 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
         st.dataframe(board, use_container_width=True, hide_index=True)
 
 
+def _scoreboard_body() -> None:
+    """Grid of score cards for every NFL game; green = live; star = the evaluated player's game."""
+    rows = live_game.scoreboard()
+    if not rows:
+        st.caption("Live scoreboard unavailable right now.")
+        return
+    focus = live_game.canon((st.session_state.get("last_res") or {}).get("team", ""))
+    for i in range(0, len(rows), 4):
+        cols = st.columns(4)
+        for col, r in zip(cols, rows[i:i + 4]):
+            star = "⭐ " if focus in (r["away"], r["home"]) else ""
+            live = r["state"] == "in"
+            score = f"{r['away']} {r['away_score']} – {r['home_score']} {r['home']}" if r["state"] != "pre" else f"{r['away']} @ {r['home']}"
+            _metric(col, f"{star}{'🔴 LIVE · ' if live else ''}{r['detail']}", score, "good" if live else "neutral")
+    st.caption("Auto-refreshes every 20 seconds while any game is live.")
+
+
+def render_live_scoreboard() -> None:
+    """Scoreboard expander; self-refreshing fragment when a game is live (needs Streamlit >= 1.37)."""
+    any_live = any(r["state"] == "in" for r in live_game.scoreboard())
+    with st.expander("📺 Live NFL Scoreboard", expanded=True):
+        if hasattr(st, "fragment"):
+            st.fragment(run_every=20 if any_live else None)(_scoreboard_body)()
+        else:
+            _scoreboard_body()
+
+
 def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
     """Live score + clock + box score -> game-script-adjusted verdict (pregame: shows status only)."""
     ctx = st.session_state.get("last_ctx", {})
@@ -303,6 +330,12 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
     if st.button("🔄 Refresh live score", key="live_refresh"):
         live_game.refresh()
         st.rerun()
+    st.markdown(
+        f'<div style="text-align:center;font-size:2.4rem;font-weight:800;color:#0f172a;">'
+        f'{game.team} {game.team_score} – {game.opp_score} {game.opp}</div>'
+        f'<div style="text-align:center;font-weight:700;color:#0369a1;margin-bottom:12px;">🔴 {game.detail}</div>',
+        unsafe_allow_html=True,
+    )
     spread = st.number_input(
         f"Pregame spread for {game.team} (negative = favorite, 0 = ignore)", value=0.0, step=0.5, key="live_spread",
         help="Removes the script the market already expected, so only the deviation from it moves the projection.",
@@ -471,6 +504,7 @@ def main() -> None:
 
     tab_eval, tab_bt = st.tabs(["⚡ Evaluate", "🔬 Matchup Backtest"])
     with tab_eval:
+        render_live_scoreboard()
         render_live_panel()
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
