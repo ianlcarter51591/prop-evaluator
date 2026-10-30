@@ -14,7 +14,7 @@ Math (all assumptions are named constants you can tune or backtest):
 """
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import requests
@@ -213,6 +213,36 @@ def _same_player(a: str, b: str) -> bool:
         return True
     xs, ys = x.split(), y.split()
     return bool(xs and ys and xs[-1] == ys[-1] and xs[0][0] == ys[0][0])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def headshot_url(name: str) -> Optional[str]:
+    """ESPN headshot URL for an NFL player (checked to exist), or None if not found."""
+    hdr = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    try:
+        resp = requests.get("https://site.web.api.espn.com/apis/common/v3/search", headers=hdr, timeout=8,
+                            params={"query": name, "limit": 10, "type": "player", "sport": "football", "league": "nfl"})
+        if resp.status_code != 200:
+            return None
+        cands: List[Tuple[str, str]] = []
+        stack: List[Any] = [resp.json()]
+        while stack:
+            o = stack.pop()
+            if isinstance(o, dict):
+                uid, label = str(o.get("uid", "")), o.get("displayName") or o.get("fullName")
+                m = re.search(r"~a:(\d+)", uid)
+                if label and m and ("l:28" in uid or str(o.get("league", "")).lower() == "nfl"):
+                    cands.append((m.group(1), str(label)))
+                stack.extend(o.values())
+            elif isinstance(o, list):
+                stack.extend(o)
+        pick = next((pid for pid, lab in cands if _same_player(lab, name)), cands[0][0] if cands else None)
+        if not pick:
+            return None
+        url = f"https://a.espncdn.com/i/headshots/nfl/players/full/{pick}.png"
+        return url if requests.head(url, headers=hdr, timeout=6, allow_redirects=True).status_code == 200 else None
+    except Exception:
+        return None
 
 
 def fetch_player_stat(event_id: str, player: str, spec: StatSpec) -> Optional[float]:
