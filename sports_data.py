@@ -30,6 +30,7 @@ SOURCE_CANDIDATES: Dict[str, List[str]] = {
     "RUSHING ATTEMPTS": ["carries"],
     "RECEIVING YARDS": ["receiving_yards"],
     "RECEPTIONS": ["receptions"],
+    "TARGETS": ["targets"],
     "INTERCEPTIONS": ["passing_interceptions", "interceptions"],
 }
 STAT_LABELS: List[str] = list(SOURCE_CANDIDATES.keys())
