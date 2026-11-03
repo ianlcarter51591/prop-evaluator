@@ -387,6 +387,46 @@ def render_contextual_reality_check() -> None:
         st.caption("💡 *Note: High-volume players insulate you from single-game variance, while back-to-backs lean toward Unders due to tired legs.*")
 
 
+def render_injury_usage(res: Dict[str, Any]) -> None:
+    """Injury / opportunity-redistribution panel (teammates out -> target or carry share moves)."""
+    inj = res.get("inj")
+    if not inj:
+        return
+    st.markdown("### 🩺 Injuries & Usage")
+    grp = inj.get("group")
+    share_lbl = {"rec": "TARGET SHARE", "rush": "CARRY SHARE"}.get(grp)
+    c = st.columns(4)
+    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Passing game")
+    _metric(c[1], "USAGE ADJ", f"x{inj['mult']:.3f}", "good" if inj["mult"] > 1.0005 else "bad" if inj["mult"] < 0.9995 else "neutral")
+    um = float(res.get("usage_mult", inj["mult"])) or 1.0
+    _metric(c[2], "PROJ BEFORE USAGE", f"{res['mu'] / um:.2f}")
+    _metric(c[3], "PROJ AFTER USAGE", f"{res['mu']:.2f}", "good" if um > 1.0005 else "bad" if um < 0.9995 else "neutral")
+    if inj.get("listed"):
+        st.caption("🩺 Injury report for " + str(res.get("team", "this team")) + ": " + " · ".join(f"{x['name']} ({x['status']})" for x in inj["listed"]))
+    elif inj.get("feed_ok", True):
+        st.caption("🩺 The injury feed lists no relevant teammates for this team.")
+    if inj["table"]:
+        st.dataframe(pd.DataFrame(inj["table"]), use_container_width=True, hide_index=True)
+        st.caption("Weight = P(misses) minus the share of his recent games already missed (no double counting; a returning teammate pulls usage back down). "
+                   "Absorption rates are assumptions; scale them in the injury settings.")
+    else:
+        st.caption("No injured or returning teammates move this projection. Add names in the injury settings if the feed is stale.")
+    st.caption("The projection, simulation, edge, EV and verdict above already include this usage adjustment.")
+
+
+def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
+    """Player's average vs the softest / toughest defenses for this stat (context only)."""
+    t = res.get("tiers")
+    if not t:
+        return
+    st.markdown("### 🎯 Player vs Defense Tiers")
+    fmt = lambda x: "n/a" if x["avg"] is None else f"{x['avg']:.1f} ({x['n']} g)"
+    c = st.columns(5)
+    for col, lab, key in zip(c, ["ALL GAMES", "VS 5 SOFTEST", "VS 10 SOFTEST", "VS 10 TOUGHEST", "VS 5 TOUGHEST"], ["overall", "soft5", "soft10", "tough10", "tough5"]):
+        _metric(col, lab, fmt(t[key]))
+    st.caption(f"Each defense is ranked per season by what it allowed {res.get('pos', 'this position')}s in {stat_category} (1 = softest). Small samples: context, not an adjustment.")
+
+
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
     """Metric cards, matchup panel, notes, and the game-log chart."""
     photo_col, title_col = st.columns([1, 6])
@@ -403,6 +443,8 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
     render_matchup(res, stat_category)
+    render_injury_usage(res)
+    render_tiers(res, stat_category)
     render_live_script(res, stat_category)
     st.markdown("### 📈 Hit Rate & Sizing")
     h = st.columns(5)
@@ -503,13 +545,21 @@ def main() -> None:
     if "matchup_k" not in ss:
         ss["matchup_k"] = load_k_file()
     for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
-                         ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0])):
+                         ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
+                         ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
         ss.setdefault(key, default)
 
     tab_eval, tab_bt = st.tabs(["⚡ Evaluate", "🔬 Matchup Backtest"])
     with tab_eval:
         render_live_scoreboard()
         render_live_panel()
+        with st.expander("🩺 Injuries & usage settings", expanded=False):
+            st.checkbox("Adjust for injured / returning teammates (target and carry share redistribution)", key="adj_inj")
+            st.slider("Absorption strength (scales how much of an absent player's share teammates pick up)", 0.5, 1.0, key="adj_absorb", step=0.05)
+            st.text_input("Teammates OUT (comma-separated; adds to the ESPN feed)", key="adj_out")
+            st.text_input("Teammates QUESTIONABLE (counted as 50%)", key="adj_q")
+            st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
+            st.caption("Applies when you press Evaluate. Check the team's report close to kickoff: the feed can lag.")
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
@@ -526,7 +576,11 @@ def main() -> None:
             opponent = "AUTO" if opp_choice == AUTO_OPP else None if opp_choice == "None" else opp_choice
             res = evaluate_prop(player_name=player_name, stat_category=stat_category, line=line_val, over_odds=over_odds,
                                 under_odds=under_odds, projection_source=proj_source, season=default_season(), opponent=opponent,
-                                matchup_k=ss.get("matchup_k"))
+                                matchup_k=ss.get("matchup_k"),
+                                adj_cfg={"injuries": ss["adj_inj"], "absorb_scale": float(ss["adj_absorb"]),
+                                         "manual_out": [x.strip() for x in str(ss["adj_out"]).split(",") if x.strip()],
+                                         "manual_q": [x.strip() for x in str(ss["adj_q"]).split(",") if x.strip()],
+                                         "manual_in": [x.strip() for x in str(ss["adj_in"]).split(",") if x.strip()]})
             ss["last_res"] = res
             ss["last_ctx"] = {"stat": stat_category, "line": float(line_val), "over": float(over_odds), "under": float(under_odds)}
         res = ss.get("last_res")
@@ -544,7 +598,10 @@ def main() -> None:
                 "shrunk toward last season, ranked 1-32 (1 = allows the most). Multiplier = 1 + k × (index − 1), clipped to ±15%.\n"
                 "- **Distribution**: Gamma for yardage, Normal for completions/attempts/carries, Negative Binomial (Poisson if under-dispersed) for TDs, receptions, INTs. 50,000 seeded draws.\n"
                 "- **Market**: two-way multiplicative devig. Edge = model % − devigged market %. EV uses the model probability at the offered price (pushes refunded).\n"
-                "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0."
+                "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0.\n"
+                "- **Injuries & usage**: injured teammates' target share (receiving) or carry share (rushing) is redistributed to the others in proportion to their own share "
+                "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect, so a returning teammate pulls usage back down. "
+                "Passing props lose a little efficiency when top targets are out, and receivers lose a little when the QB is out. The projection is shifted and the verdict re-priced; absorption rates are assumptions."
             )
     with tab_bt:
         render_matchup_backtest()
