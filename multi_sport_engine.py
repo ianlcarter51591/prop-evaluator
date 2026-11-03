@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from nfl_matchups import DEFAULT_K, matchup_multiplier, matchup_table
+from nfl_adjust import injury_layer, tier_splits
 from sports_data import current_nfl_season, fetch_nfl_player_logs, load_schedule, load_weekly, next_game
 
 SOURCES: Tuple[str, ...] = ("Model (EWMA mean)", "My mean", "My median")
@@ -169,8 +170,8 @@ def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optio
 
 def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: float, under_odds: float,
                   projection_source: str = "Model (EWMA mean)", season: int = 2026, opponent: Optional[str] = None,
-                  matchup_k: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    """Full evaluation: projection x matchup -> simulation -> devigged edge, EV, Kelly, hit rates."""
+                  matchup_k: Optional[Dict[str, float]] = None, adj_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Full evaluation: projection x matchup x injury/usage -> simulation -> devigged edge, EV, Kelly, hit rates."""
     try:
         for o in (over_odds, under_odds):
             if abs(float(o)) < 100:
@@ -188,24 +189,44 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
 
         warnings: List[str] = []
         matchup: Optional[Dict[str, Any]] = None
+        weekly: Optional[pd.DataFrame] = None
         try:
-            matchup, note = resolve_matchup(team, pos, stat, season, opponent, load_weekly(season, 1), matchup_k)
+            weekly = load_weekly(season, 1)
+            matchup, note = resolve_matchup(team, pos, stat, season, opponent, weekly, matchup_k)
             if note:
                 warnings.append(note)
         except Exception as e:
             warnings.append(f"Matchup data unavailable ({e}); no adjustment applied.")
         mult = matchup["mult"] if matchup else 1.0
 
-        proj = build_projection(cur[stat].to_numpy(float), pri[stat].to_numpy(float), stat, mult)
+        # Injury / opportunity redistribution (teammates out or returning) and defense-tier splits.
+        pid = str(logs["PID"].iloc[-1])
+        inj: Optional[Dict[str, Any]] = None
+        tiers: Optional[Dict[str, Any]] = None
+        if weekly is not None:
+            try:
+                tiers = tier_splits(weekly, pid, pos, stat)
+            except Exception as e:
+                warnings.append(f"Defense-tier splits unavailable ({e}).")
+            if adj_cfg and adj_cfg.get("injuries"):
+                try:
+                    inj = injury_layer(player_name, pid, team, stat, weekly, season, adj_cfg)
+                    warnings.extend(inj["notes"])
+                except Exception as e:
+                    warnings.append(f"Injury adjustment unavailable ({e}); none applied.")
+        usage_mult = inj["mult"] if inj else 1.0
+        total_mult = mult * usage_mult
+
+        proj = build_projection(cur[stat].to_numpy(float), pri[stat].to_numpy(float), stat, total_mult)
         recent = logs.tail(10)
         vals = recent[stat].to_numpy(float)
         mu = proj.mu
         if projection_source == "My mean" and len(vals):
-            mu = max(float(np.mean(vals)) * mult, 0.05)
+            mu = max(float(np.mean(vals)) * total_mult, 0.05)
         elif projection_source == "My median" and len(vals):
-            mu = max(float(np.median(vals)) * mult, 0.05)
+            mu = max(float(np.median(vals)) * total_mult, 0.05)
         if mu != proj.mu:
-            proj = Projection(mu, proj.sigma * mu / proj.mu, proj.n_current, proj.n_prior, mult)
+            proj = Projection(mu, proj.sigma * mu / proj.mu, proj.n_current, proj.n_prior, total_mult)
         sims = simulate(proj.mu, proj.sigma, FAMILY[stat])
 
         p_over, p_under = float(np.mean(sims > line)), float(np.mean(sims < line))
@@ -232,7 +253,8 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             # Legacy aliases so an older app.py that reads the previous result keys keeps working.
             "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
             "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
-            "base_proj": proj.mu / mult if mult else proj.mu, "projection_ewma": proj.mu / mult if mult else proj.mu,
+            "usage_mult": usage_mult, "inj": inj, "tiers": tiers,
+            "base_proj": proj.mu / total_mult if total_mult else proj.mu, "projection_ewma": proj.mu / total_mult if total_mult else proj.mu,
             "kelly_pct_legacy": kelly_fraction(p_w, p_l, odds_side) * 100.0,
             "gamelog_details": [{"stat_value": float(v), "season": s, "x_label": f"{d}<br>{o}"}
                                 for v, s, d, o in zip(vals, recent["SEASON_TAG"], recent["DATE"], recent["OPPONENT"])],
