@@ -1,4 +1,4 @@
-"""NFL Monte Carlo prop engine: shrunk EWMA projection x real matchup, Gamma/Normal/NegBin sims, devigged edge, Kelly."""
+"""NFL Monte Carlo prop engine: shrunk EWMA projection x real matchup, Gamma/Normal/NegBin sims, devigged edge, Kelly, 6-Point Assessment."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,17 +21,17 @@ STATS: List[str] = [
 ]
 WINDOW = 8             # recent current-season games feeding the EWMA
 DECAY = 0.85           # EWMA decay per game of age
-N_PRIOR = 4.0          # pseudo-games of last-season weight (roles change more in the NFL than the NBA)
+N_PRIOR = 4.0          # pseudo-games of last-season weight
 N_CV_PRIOR = 4.0       # pseudo-games of weight on the stat's default spread
 N_SIMS = 50_000
 KELLY_FRACTION, KELLY_CAP = 0.25, 0.05
-# Distribution family per stat: right-skewed yards -> Gamma; high-volume counts -> Normal; low counts -> NegBin/Poisson.
+
 FAMILY: Dict[str, str] = {
     "PASSING YARDS": "gamma", "RUSHING YARDS": "gamma", "RECEIVING YARDS": "gamma",
     "PASS COMPLETIONS": "normal", "PASS ATTEMPTS": "normal", "RUSHING ATTEMPTS": "normal",
     "PASSING TDS": "count", "RECEPTIONS": "count", "INTERCEPTIONS": "count",
 }
-# Typical game-to-game coefficient of variation (assumptions used only to stabilize tiny samples).
+
 DEFAULT_CV: Dict[str, float] = {
     "PASSING YARDS": 0.25, "PASS COMPLETIONS": 0.22, "PASS ATTEMPTS": 0.18, "PASSING TDS": 0.65, "RUSHING YARDS": 0.55,
     "RUSHING ATTEMPTS": 0.35, "RECEIVING YARDS": 0.65, "RECEPTIONS": 0.50, "INTERCEPTIONS": 1.00,
@@ -39,18 +39,15 @@ DEFAULT_CV: Dict[str, float] = {
 
 
 def stat_options() -> List[str]:
-    """Stat labels shown in the UI."""
     return STATS
 
 
 def default_season() -> int:
-    """Current NFL season year."""
     return current_nfl_season()
 
 
 @dataclass
 class Projection:
-    """Posterior per-game projection for one stat."""
     mu: float
     sigma: float
     n_current: int
@@ -59,24 +56,17 @@ class Projection:
 
 
 def ewma_weights(n: int, decay: float = DECAY) -> np.ndarray:
-    """Normalized weights for n games ordered oldest -> newest (newest heaviest)."""
     w = decay ** np.arange(n)[::-1]
     return w / w.sum()
 
 
 def _cv(x: np.ndarray) -> Optional[float]:
-    """Coefficient of variation, or None if the sample is too small/degenerate."""
     if len(x) < 3 or float(np.mean(x)) <= 0:
         return None
     return float(np.std(x, ddof=1) / np.mean(x))
 
 
 def build_projection(cur_x: np.ndarray, pri_x: np.ndarray, stat: str, mult: float = 1.0) -> Projection:
-    """
-    mu    = [ (n*EWMA_cur + n0*mean_prior) / (n + n0) ] * matchup_mult
-    sigma = max(pooled CV, 0.6*default CV) * mu * sqrt(1 + 1/(n + n0)),
-            pooled CV = weighted mean of current CV (weight n), prior CV (weight n0) and the stat's default CV.
-    """
     n, n0 = len(cur_x), (N_PRIOR if len(pri_x) > 0 else 0.0)
     if n + n0 == 0:
         raise ValueError("No usable games (current or prior season).")
@@ -93,7 +83,6 @@ def build_projection(cur_x: np.ndarray, pri_x: np.ndarray, stat: str, mult: floa
 
 
 def simulate(mu: float, sigma: float, family: str, n_sims: int = N_SIMS, seed: int = 42) -> np.ndarray:
-    """Vectorized seeded draws: Gamma (rounded), Normal (rounded, >=0), or NegBin/Poisson for low counts."""
     rng = np.random.default_rng(seed)
     var = sigma ** 2
     if family == "gamma":
@@ -106,38 +95,106 @@ def simulate(mu: float, sigma: float, family: str, n_sims: int = N_SIMS, seed: i
 
 
 def implied_prob(odds: float) -> float:
-    """American odds -> implied probability (with vig)."""
     o = float(odds)
     return -o / (-o + 100.0) if o < 0 else 100.0 / (o + 100.0)
 
 
 def payout(odds: float) -> float:
-    """Profit per 1 unit staked at American odds."""
     o = float(odds)
     return 100.0 / abs(o) if o < 0 else o / 100.0
 
 
 def devig(over_odds: float, under_odds: float) -> Tuple[float, float]:
-    """Multiplicative devig of a two-way market."""
     po, pu = implied_prob(over_odds), implied_prob(under_odds)
     return po / (po + pu), pu / (po + pu)
 
 
 def prob_to_american(p: float) -> int:
-    """Probability -> American odds (clipped to [1%, 99%])."""
     p = float(np.clip(p, 0.01, 0.99))
     return int(round(-100.0 * p / (1.0 - p))) if p >= 0.5 else int(round(100.0 * (1.0 - p) / p))
 
 
 def kelly_fraction(p_win: float, p_lose: float, odds: float) -> float:
-    """Fractional Kelly stake (share of bankroll), capped; 0 when EV <= 0."""
     b = payout(odds)
     return float(np.clip((b * p_win - p_lose) / b * KELLY_FRACTION, 0.0, KELLY_CAP))
 
 
+def evaluate_six_point_criteria(
+    stat_category: str,
+    line: float,
+    is_over: bool,
+    edge_pp: float,
+    ev_pct: float,
+    dv_side: float,
+    odds_side: float,
+    matchup: Optional[Dict[str, Any]],
+    inj: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Evaluates NFL prop against 6 criteria:
+    1. Line High Enough (Baby Line)
+    2. AI Edge
+    3. Implied Chance
+    4. Defensive Rank
+    5. Injury
+    6. Game Script & Rest
+    """
+    min_line_thresholds = {
+        "PASSING YARDS": 150.0, "PASS COMPLETIONS": 12.0, "PASS ATTEMPTS": 20.0, "PASSING TDS": 0.5,
+        "RUSHING YARDS": 20.0, "RUSHING ATTEMPTS": 6.0, "RECEIVING YARDS": 20.0, "RECEPTIONS": 2.5,
+        "INTERCEPTIONS": 0.5,
+    }
+    stat_key = stat_category.upper().strip()
+    min_req = min_line_thresholds.get(stat_key, 1.5)
+    c1_baby_line = line >= min_req
+
+    c2_ai_edge = (edge_pp >= 2.5) and (ev_pct > 0.0)
+    c3_implied_chance = (dv_side >= 0.50) or (odds_side <= -105)
+
+    if matchup and "rank" in matchup:
+        rank = matchup["rank"]
+        n_teams = matchup.get("n_teams", 32)
+        c4_def_rank = (rank <= n_teams / 2) if is_over else (rank > n_teams / 2)
+    else:
+        c4_def_rank = True
+
+    listed = (inj or {}).get("listed", [])
+    has_high_risk_injuries = any(item.get("p_out", 0) > 0.8 for item in listed)
+    c5_injury = (inj is None or inj.get("feed_ok", True)) and (not has_high_risk_injuries)
+
+    rest_ok = True
+    if matchup and matchup.get("rest") is not None and matchup.get("opp_rest") is not None:
+        if matchup["rest"] < 6 or (matchup["opp_rest"] - matchup["rest"] >= 3):
+            rest_ok = False
+    c6_game_script = rest_ok
+
+    checks = {
+        "1. Line High Enough (Baby Line)": (c1_baby_line, f"Line ({line:g}) ≥ {min_req:g} stat threshold"),
+        "2. AI Edge": (c2_ai_edge, f"Edge ({edge_pp:+.1f}pp) ≥ +2.5pp with positive EV ({ev_pct:+.1f}%)"),
+        "3. Implied Chance": (c3_implied_chance, f"Market probability ({dv_side*100:.1f}%) / price ({odds_side:+d}) favors side"),
+        "4. Defensive Rank": (c4_def_rank, f"Opponent matchup rank (#{matchup['rank'] if matchup else 'N/A'}) supports {'Over' if is_over else 'Under'}"),
+        "5. Injury": (c5_injury, "No active high-risk injury flags disrupting projection stability"),
+        "6. Game Script & Rest": (c6_game_script, "Clean schedule & rest spot (no short-week/rest disadvantage)"),
+    }
+
+    score = sum(1 for val, _ in checks.values() if val)
+    if score == 6:
+        verdict = "SHARP PLAY"
+    elif score == 5:
+        verdict = "LEAN"
+    else:
+        verdict = "PASS"
+
+    return {
+        "score": score,
+        "max_score": 6,
+        "verdict": verdict,
+        "checks": checks,
+    }
+
+
 def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optional[str], weekly: pd.DataFrame,
                     k_map: Optional[Dict[str, float]]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Opponent ('AUTO' = next scheduled game) -> rank/allowed/index/multiplier vs the player's position group."""
     if not opponent or str(opponent).upper() == "NONE":
         return None, "No opponent selected: matchup adjustment skipped."
     info: Dict[str, Any] = {}
@@ -171,12 +228,10 @@ def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optio
 def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: float, under_odds: float,
                   projection_source: str = "Model (EWMA mean)", season: int = 2026, opponent: Optional[str] = None,
                   matchup_k: Optional[Dict[str, float]] = None, adj_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Full evaluation: projection x matchup x injury/usage -> simulation -> devigged edge, EV, Kelly, hit rates."""
     try:
         for o in (over_odds, under_odds):
             if abs(float(o)) < 100:
-                return {"error": f"Odds {o:g} aren't valid American odds (must be <= -100 or >= +100). "
-                                 "If these came from the Odds API, request oddsFormat=american."}
+                return {"error": f"Odds {o:g} aren't valid American odds (must be <= -100 or >= +100)."}
         stat = stat_category.upper().strip()
         if stat not in FAMILY:
             return {"error": f"Unknown stat category '{stat_category}'."}
@@ -199,7 +254,6 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             warnings.append(f"Matchup data unavailable ({e}); no adjustment applied.")
         mult = matchup["mult"] if matchup else 1.0
 
-        # Injury / opportunity redistribution (teammates out or returning) and defense-tier splits.
         pid = str(logs["PID"].iloc[-1])
         inj: Optional[Dict[str, Any]] = None
         tiers: Optional[Dict[str, Any]] = None
@@ -238,19 +292,31 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
         odds_side, ev = (over_odds, ev_over) if is_over else (under_odds, ev_under)
         p_cond, dv_side = p_w / decided, (dv_over if is_over else dv_under)
 
+        six_point_eval = evaluate_six_point_criteria(
+            stat_category=stat,
+            line=line,
+            is_over=is_over,
+            edge_pp=(p_cond - dv_side) * 100.0,
+            ev_pct=ev * 100.0,
+            dv_side=dv_side,
+            odds_side=odds_side,
+            matchup=matchup,
+            inj=inj,
+        )
+
         if proj.n_current < 6:
             warnings.append(f"Small sample: {proj.n_current} games this season; projection leans on last season ({proj.n_prior} games).")
         if proj.n_prior == 0:
             warnings.append("No prior-season games found; no shrinkage applied.")
         return {
             "player_name": player_name, "team": team, "pos": pos, "mean": float(np.mean(sims)), "median": float(np.median(sims)),
-            "verdict": "PLAY" if ev > 0 else "PASS", "best_side": f"{'Over' if is_over else 'Under'} {line:g}",
+            "verdict": six_point_eval["verdict"], "best_side": f"{'Over' if is_over else 'Under'} {line:g}",
             "ev_pct": ev * 100.0, "edge_pp": (p_cond - dv_side) * 100.0, "p_model": p_cond * 100.0, "p_market": dv_side * 100.0,
             "fair_odds": prob_to_american(p_cond), "kelly_pct": kelly_fraction(p_w, p_l, odds_side) * 100.0,
             "raw_avg": float(np.mean(vals)) if len(vals) else 0.0, "mu": proj.mu,
             "hit10": int(np.sum(vals > line)), "n10": len(vals), "hit5": int(np.sum(vals[-5:] > line)), "n5": len(vals[-5:]),
             "n_current": proj.n_current, "n_prior": proj.n_prior, "matchup": matchup, "warnings": warnings,
-            # Legacy aliases so an older app.py that reads the previous result keys keeps working.
+            "six_point_eval": six_point_eval,
             "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
             "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
             "usage_mult": usage_mult, "inj": inj, "tiers": tiers,
