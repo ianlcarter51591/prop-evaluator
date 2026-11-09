@@ -2,17 +2,6 @@
 
 Score = number of passed checks for a side:  6/6 -> SHARP,  5/6 -> LEAN,  <= 4/6 -> PASS.
 A check that cannot be verified counts as NOT passed (and is shown as unverified).
-
-    1. Baby line      line >= MIN_LINE[stat]
-    2. AI edge        side-direction margin (proj - line for Over, line - proj for Under)
-                      >= max(MIN_EDGE_ABS[stat], MIN_EDGE_PCT * line)
-    3. Implied chance devigged market probability of the side > IMPLIED_MIN
-    4. Defensive rank season-long AND last-RECENT_GAMES opponent ranks (vs the player's position
-                      group, 1 = softest) both support the side: Over needs rank <= RANK_CUTOFF,
-                      Under needs rank > n_teams - RANK_CUTOFF
-    5. Injury         player not flagged, no flagged skill teammate, QB1 not flagged (receiving props)
-    6. Game script    |spread| < BLOWOUT_SPREAD and no bad weather at an outdoor stadium
-                      (wind, rain, snow or extreme cold in the 3 hours from kickoff)
 """
 
 from __future__ import annotations
@@ -28,14 +17,26 @@ from nfl_matchups import _defense_games
 
 # --- Thresholds (edit freely) -------------------------------------------------
 MIN_LINE: Dict[str, float] = {
-    "PASSING YARDS": 175.5, "PASS COMPLETIONS": 14.5, "PASS ATTEMPTS": 24.5, "PASSING TDS": 1.5,
-    "RUSHING YARDS": 35.5, "RUSHING ATTEMPTS": 8.5, "RECEIVING YARDS": 35.5, "RECEPTIONS": 3.5,
-    "INTERCEPTIONS": 0.5,
+    "PASSING YARDS": 175.5, "PASS YARDS": 175.5,
+    "PASS COMPLETIONS": 14.5,
+    "PASS ATTEMPTS": 24.5,
+    "PASSING TDS": 1.5, "PASS TDS": 1.5,
+    "RUSHING YARDS": 35.5, "RUSH YARDS": 35.5,
+    "RUSHING ATTEMPTS": 8.5, "RUSH ATTEMPTS": 8.5,
+    "RECEIVING YARDS": 35.5, "REC YARDS": 35.5,
+    "RECEPTIONS": 3.5,
+    "INTERCEPTIONS": 0.5, "PASS INTS": 0.5,
 }
 MIN_EDGE_ABS: Dict[str, float] = {
-    "PASSING YARDS": 12.0, "PASS COMPLETIONS": 1.5, "PASS ATTEMPTS": 2.0, "PASSING TDS": 0.25,
-    "RUSHING YARDS": 6.0, "RUSHING ATTEMPTS": 1.5, "RECEIVING YARDS": 6.0, "RECEPTIONS": 0.75,
-    "INTERCEPTIONS": 0.15,
+    "PASSING YARDS": 12.0, "PASS YARDS": 12.0,
+    "PASS COMPLETIONS": 1.5,
+    "PASS ATTEMPTS": 2.0,
+    "PASSING TDS": 0.25, "PASS TDS": 0.25,
+    "RUSHING YARDS": 6.0, "RUSH YARDS": 6.0,
+    "RUSHING ATTEMPTS": 1.5, "RUSH ATTEMPTS": 1.5,
+    "RECEIVING YARDS": 6.0, "REC YARDS": 6.0,
+    "RECEPTIONS": 0.75,
+    "INTERCEPTIONS": 0.15, "PASS INTS": 0.15,
 }
 MIN_EDGE_PCT = 0.06
 IMPLIED_MIN = 0.50
@@ -49,9 +50,7 @@ SHARP_SCORE, LEAN_SCORE = 6, 5
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
-# ESPN code -> nflverse code (applied to both sides before comparing).
 ABBR_CANON: Dict[str, str] = {"WSH": "WAS", "LAR": "LA", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LA"}
-# Home stadium (lat, lon, roof). roof: outdoor | dome | retractable | canopy. Approximate coordinates.
 STADIUMS: Dict[str, Tuple[float, float, str]] = {
     "ARI": (33.5276, -112.2626, "retractable"), "ATL": (33.7554, -84.4010, "dome"),
     "BAL": (39.2780, -76.6227, "outdoor"), "BUF": (42.7738, -78.7870, "outdoor"),
@@ -72,6 +71,23 @@ STADIUMS: Dict[str, Tuple[float, float, str]] = {
 }
 
 
+def canon_stat(stat: str) -> str:
+    """Canonicalize stat category to standard nflverse/threshold keys."""
+    s = str(stat or "").upper().strip().replace("_", " ")
+    s = re.sub(r"^PLAYER\s+", "", s)
+    if "PASS" in s and "YARD" in s: return "PASSING YARDS"
+    if "PASS" in s and "COMP" in s: return "PASS COMPLETIONS"
+    if "PASS" in s and "ATT" in s: return "PASS ATTEMPTS"
+    if "PASS" in s and "TD" in s: return "PASSING TDS"
+    if "PASS" in s and ("INT" in s or "INTERCEPTION" in s): return "INTERCEPTIONS"
+    if "RUSH" in s and "YARD" in s: return "RUSHING YARDS"
+    if "RUSH" in s and "ATT" in s: return "RUSHING ATTEMPTS"
+    if ("REC" in s or "RECEIVING" in s) and "YARD" in s: return "RECEIVING YARDS"
+    if "REC" in s or "RECEPTION" in s: return "RECEPTIONS"
+    if "INT" in s: return "INTERCEPTIONS"
+    return s
+
+
 def canon(abbr: Any) -> str:
     """Upper-case team code mapped to the nflverse convention."""
     a = str(abbr or "").upper().strip()
@@ -80,8 +96,6 @@ def canon(abbr: Any) -> str:
 
 @dataclass(frozen=True)
 class Check:
-    """One criterion's outcome. `verified=False` means the data was unavailable."""
-
     key: str
     label: str
     passed: bool
@@ -91,58 +105,49 @@ class Check:
 
 @dataclass(frozen=True)
 class SixPointResult:
-    """All six checks for one side plus the tier."""
-
     side: str
     score: int
     tier: str
     checks: Tuple[Check, ...]
 
     def as_dict(self) -> Dict[str, Any]:
-        """Plain-dict form (safe for st.session_state)."""
         return {"side": self.side, "score": self.score, "tier": self.tier,
                 "checks": [c.__dict__.copy() for c in self.checks]}
 
 
 @dataclass(frozen=True)
 class GameInfo:
-    """What the ESPN scoreboard says about one game."""
-
     home: str
     away: str
     kickoff_iso: str
-    spread: Optional[float]      # absolute points, None if no line posted
+    spread: Optional[float]
     neutral: bool
     indoor: Optional[bool]
 
 
 @dataclass(frozen=True)
 class Weather:
-    """Kickoff-window weather verdict for the game script check."""
-
     verified: bool
     bad: bool
     detail: str
 
 
 def tier_for(score: int) -> str:
-    """6 -> SHARP, 5 -> LEAN, otherwise PASS."""
     return "SHARP" if score >= SHARP_SCORE else "LEAN" if score == LEAN_SCORE else "PASS"
 
 
-# --- Individual checks --------------------------------------------------------
 def check_line(stat: str, line: float) -> Check:
-    """1. Baby line: the line must be at or above the stat's minimum."""
-    need = MIN_LINE.get(stat, 0.0)
+    c_stat = canon_stat(stat)
+    need = MIN_LINE.get(c_stat, MIN_LINE.get(stat, 0.0))
     ok = bool(line >= need)
     return Check("baby_line", "1. Line High Enough (Baby Line)", ok,
                  f"Line {line:g} vs minimum {need:g} for this stat" + ("" if ok else ": too low, too risky"))
 
 
 def check_edge(side: str, stat: str, line: float, proj: float) -> Check:
-    """2. AI edge: projection far enough past the line in the side's direction."""
+    c_stat = canon_stat(stat)
     margin = proj - line if side == "Over" else line - proj
-    need = max(MIN_EDGE_ABS.get(stat, 0.0), MIN_EDGE_PCT * abs(line))
+    need = max(MIN_EDGE_ABS.get(c_stat, MIN_EDGE_ABS.get(stat, 0.0)), MIN_EDGE_PCT * abs(line))
     ok = bool(margin >= need)
     return Check("ai_edge", "2. AI Edge", ok,
                  f"Projection {proj:.1f} is {margin:+.1f} {'above' if side == 'Over' else 'below'} "
@@ -150,20 +155,17 @@ def check_edge(side: str, stat: str, line: float, proj: float) -> Check:
 
 
 def check_implied(side: str, p_market: float) -> Check:
-    """3. Implied chance: the devigged market favors the selected side."""
     ok = bool(p_market > IMPLIED_MIN)
     return Check("implied_chance", "3. Implied Chance", ok,
                  f"Devigged DraftKings price gives {side} {p_market:.1%} (needs more than {IMPLIED_MIN:.0%}); single book, no multi-book vote")
 
 
 def rank_supports(side: str, rank: int, n_teams: int, cutoff: int = RANK_CUTOFF) -> bool:
-    """Rank 1 = softest defense. Over wants a soft defense, Under a tough one."""
     return rank <= cutoff if side == "Over" else rank > n_teams - cutoff
 
 
 def check_defense(side: str, season_rank: Optional[int], season_n: Optional[int],
                   recent_rank: Optional[int], recent_n: Optional[int], pos: str = "") -> Check:
-    """4. Defensive rank: season-long and recent ranks (vs this position group) both support the side."""
     label = "4. Defensive Rank"
     if None in (season_rank, season_n, recent_rank, recent_n):
         have = "season" if season_rank is not None else "recent" if recent_rank is not None else "neither"
@@ -177,7 +179,6 @@ def check_defense(side: str, season_rank: Optional[int], season_n: Optional[int]
 
 
 def flagged_players(inj: Mapping[str, Any]) -> List[str]:
-    """Everyone with an active flag: the player, listed skill teammates, QB1 (receiving props)."""
     out: List[str] = []
     if inj.get("self_status"):
         out.append(f"the player ({inj['self_status']})")
@@ -188,7 +189,6 @@ def flagged_players(inj: Mapping[str, Any]) -> List[str]:
 
 
 def check_injury(inj: Optional[Mapping[str, Any]]) -> Check:
-    """5. Injury: nobody relevant carries an active flag."""
     label = "5. Injury"
     if not inj or not inj.get("checked") or not inj.get("feed_ok", False):
         return Check("injury", label, False,
@@ -199,7 +199,6 @@ def check_injury(inj: Optional[Mapping[str, Any]]) -> Check:
 
 
 def check_game_script(spread: Optional[float], weather: Optional[Weather]) -> Check:
-    """6. Game script: no blowout risk and no bad weather."""
     label = "6. Game Script"
     if spread is None or weather is None or not weather.verified:
         parts = []
@@ -218,7 +217,6 @@ def score_prop(side: str, stat: str, line: float, proj: float, p_market: float,
                season_rank: Optional[int], season_n: Optional[int], recent_rank: Optional[int],
                recent_n: Optional[int], pos: str, inj: Optional[Mapping[str, Any]],
                spread: Optional[float], weather: Optional[Weather]) -> SixPointResult:
-    """Run all six checks for one side and return the score and tier."""
     checks = (
         check_line(stat, line),
         check_edge(side, stat, line, proj),
@@ -231,15 +229,11 @@ def score_prop(side: str, stat: str, line: float, proj: float, p_market: float,
     return SixPointResult(side=side, score=score, tier=tier_for(score), checks=checks)
 
 
-# --- Data helpers (pure) --------------------------------------------------------
 def recent_defense_rank(weekly: pd.DataFrame, stat: str, pos: str, season: int, opponent: str,
                         n_recent: int = RECENT_GAMES, min_games: int = RECENT_MIN_GAMES
                         ) -> Tuple[Optional[int], Optional[int]]:
-    """Opponent's rank (1 = softest) by what it allowed `pos` in its last `n_recent` games this season.
-
-    Returns (rank, n_teams) or (None, None) when the opponent has too few games.
-    """
-    g = _defense_games(weekly, stat, pos)
+    c_stat = canon_stat(stat)
+    g = _defense_games(weekly, c_stat, pos)
     g = g[g["SEASON"] == season].sort_values(["OPP", "WEEK"])
     g = g[g.groupby("OPP").cumcount(ascending=False) < n_recent]
     agg = g.groupby("OPP")["V"].agg(["mean", "size"])
@@ -252,7 +246,6 @@ def recent_defense_rank(weekly: pd.DataFrame, stat: str, pos: str, season: int, 
 
 
 def _spread_from_odds(odds: Any) -> Optional[float]:
-    """Absolute spread from an ESPN `odds` list (numeric field, else the 'KC -3.5' text)."""
     for o in odds or []:
         sp = o.get("spread")
         if isinstance(sp, (int, float)) and not isinstance(sp, bool):
@@ -267,7 +260,6 @@ def _spread_from_odds(odds: Any) -> Optional[float]:
 
 
 def parse_scoreboard_game(payload: Mapping[str, Any], team: str, opponent: Optional[str] = None) -> Optional[GameInfo]:
-    """Find `team`'s game (vs `opponent` if given) in an ESPN scoreboard payload."""
     t, o = canon(team), canon(opponent) if opponent else None
     for ev in payload.get("events", []):
         comp = (ev.get("competitions") or [{}])[0]
@@ -282,7 +274,6 @@ def parse_scoreboard_game(payload: Mapping[str, Any], team: str, opponent: Optio
 
 
 def summarize_forecast(payload: Mapping[str, Any], kickoff_iso: str, hours: int = WEATHER_HOURS) -> Optional[Dict[str, float]]:
-    """Worst conditions in the `hours` hours from kickoff, from an Open-Meteo hourly payload (UTC)."""
     h = payload.get("hourly") or {}
     if not h.get("time"):
         return None
@@ -298,7 +289,6 @@ def summarize_forecast(payload: Mapping[str, Any], kickoff_iso: str, hours: int 
 
 
 def judge_weather(w: Mapping[str, float]) -> Weather:
-    """Apply the thresholds to a forecast summary."""
     problems = [txt for bad, txt in (
         (w["wind"] >= WIND_MPH or w["gust"] >= GUST_MPH, f"wind {w['wind']:.0f} mph (gusts {w['gust']:.0f})"),
         (w["precip"] >= PRECIP_MM, f"rain {w['precip']:.1f} mm"),
@@ -310,7 +300,6 @@ def judge_weather(w: Mapping[str, float]) -> Weather:
 
 
 def game_weather(info: Optional[GameInfo], fetch_forecast: Callable[[float, float], Mapping[str, Any]]) -> Weather:
-    """Weather verdict for a game: indoor stadiums pass; outdoor ones use the forecast."""
     if info is None:
         return Weather(False, False, "game not found on the ESPN scoreboard, weather not checked")
     if info.neutral:
@@ -330,9 +319,7 @@ def game_weather(info: Optional[GameInfo], fetch_forecast: Callable[[float, floa
     return judge_weather(summary)
 
 
-# --- Network fetchers (wrapped with st.cache_data in the app) --------------------
 def fetch_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
-    """ESPN scoreboard lookup: on `gameday` if known, else the next 14 days."""
     import requests
     day = pd.Timestamp(gameday) if gameday else pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
     end = day if gameday else day + pd.Timedelta(days=14)
@@ -343,7 +330,6 @@ def fetch_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) 
 
 
 def fetch_forecast(lat: float, lon: float) -> Dict[str, Any]:
-    """Open-Meteo hourly forecast (UTC, mph, mm, °F) for the next 16 days."""
     import requests
     params = {"latitude": lat, "longitude": lon, "forecast_days": 16, "timezone": "UTC",
               "hourly": "temperature_2m,precipitation,snowfall,wind_speed_10m,wind_gusts_10m",
@@ -353,15 +339,10 @@ def fetch_forecast(lat: float, lon: float) -> Dict[str, Any]:
     return resp.json()
 
 
-# --- Orchestration -------------------------------------------------------------
 def assess(res: Mapping[str, Any], stat_category: str, line: float, weekly: Optional[pd.DataFrame], season: int,
            get_game: Callable[[str, Optional[str], Optional[str]], Optional[GameInfo]] = fetch_game_info,
            get_forecast: Callable[[float, float], Mapping[str, Any]] = fetch_forecast) -> Dict[str, Any]:
-    """Six-point assessment for both sides of an evaluate_prop result.
-
-    Returns {"Over": {...}, "Under": {...}, "best": "Over"|"Under"} (plain dicts).
-    """
-    stat = stat_category.upper().strip()
+    stat = canon_stat(stat_category)
     best = "Over" if str(res["best_side"]).startswith("Over") else "Under"
     p_best = float(res["p_market"]) / 100.0
     m = res.get("matchup") or {}
@@ -381,7 +362,6 @@ def assess(res: Mapping[str, Any], stat_category: str, line: float, weekly: Opti
     return out
 
 
-# --- Odds-board tagging --------------------------------------------------------
 TAG_COL = "Six-Point"
 NICKNAMES: Dict[str, str] = {
     "ARI": "cardinals", "ATL": "falcons", "BAL": "ravens", "BUF": "bills", "CAR": "panthers", "CHI": "bears",
@@ -394,26 +374,22 @@ NICKNAMES: Dict[str, str] = {
 
 
 def game_matches(label: str, team: Optional[str], opponent: Optional[str]) -> bool:
-    """True if both teams' nicknames appear in the Odds API game label ("Kansas City Chiefs @ Denver Broncos ...")."""
     nicks = [NICKNAMES.get(canon(t)) for t in (team, opponent)]
     return all(nicks) and all(n in str(label).lower() for n in nicks)
 
 
 def teams_in_label(label: str) -> List[str]:
-    """Team codes whose nicknames appear in an Odds API game label."""
     low = str(label).lower()
     return [code for code, nick in NICKNAMES.items() if nick in low]
 
 
 def opponent_from_label(label: str, team: Optional[str]) -> Optional[str]:
-    """The other team's code when `team` is one of exactly two teams in the label, else None."""
     teams = teams_in_label(label)
     t = canon(team)
     return next((c for c in teams if c != t), None) if len(teams) == 2 and t in teams else None
 
 
 def label_gameday(label: str) -> Optional[str]:
-    """ET calendar date (YYYY-MM-DD) from a label ending in "(2026-11-09 02:12 UTC)", else None."""
     m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*UTC", str(label))
     if not m:
         return None
@@ -421,12 +397,10 @@ def label_gameday(label: str) -> Optional[str]:
 
 
 def _best(six: Any) -> Optional[Mapping[str, Any]]:
-    """The scored result for the recommended side, or None (also None for a not-scored reason string)."""
     return six[six["best"]] if isinstance(six, Mapping) else None
 
 
 def tag_text(six: Any) -> str:
-    """Cell text: tier tag for 5/6 and 6/6, plain score otherwise; a dash plus the reason when not scored."""
     if isinstance(six, str):
         return f"— {six}"
     best = _best(six)
@@ -436,11 +410,10 @@ def tag_text(six: Any) -> str:
         return f"🔥 SHARP {best['score']}/6 · {best['side']}"
     if best["tier"] == "LEAN":
         return f"⚡ LEAN {best['score']}/6 · {best['side']}"
-    return f"{best['score']}/6"
+    return f"{best['score']}/6 · {best['side']}"
 
 
 def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Any]) -> pd.DataFrame:
-    """Add the tag column to the odds-board table and list the best-scoring props first (stable)."""
     out = summary.copy()
     out[TAG_COL] = out["Player"].map(lambda p: tag_text(six_by_player.get(p)))
     rank = out["Player"].map(lambda p: (_best(six_by_player.get(p)) or {"score": -1})["score"])
@@ -448,7 +421,6 @@ def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Any]
 
 
 def style_tags(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    """Row colors: green for SHARP, gold for LEAN (white-on-dark so they read on the dark table)."""
     def row_style(row: pd.Series) -> List[str]:
         tag = str(row.get(TAG_COL, ""))
         css = ("background-color:#166534;color:#ffffff;font-weight:700" if tag.startswith("🔥")
