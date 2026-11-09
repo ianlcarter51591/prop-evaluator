@@ -399,13 +399,36 @@ def game_matches(label: str, team: Optional[str], opponent: Optional[str]) -> bo
     return all(nicks) and all(n in str(label).lower() for n in nicks)
 
 
-def _best(six: Optional[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
-    """The scored result for the recommended side, or None."""
-    return six[six["best"]] if six else None
+def teams_in_label(label: str) -> List[str]:
+    """Team codes whose nicknames appear in an Odds API game label."""
+    low = str(label).lower()
+    return [code for code, nick in NICKNAMES.items() if nick in low]
 
 
-def tag_text(six: Optional[Mapping[str, Any]]) -> str:
-    """Cell text: tier tag for 5/6 and 6/6, plain score otherwise, a dash when not scored."""
+def opponent_from_label(label: str, team: Optional[str]) -> Optional[str]:
+    """The other team's code when `team` is one of exactly two teams in the label, else None."""
+    teams = teams_in_label(label)
+    t = canon(team)
+    return next((c for c in teams if c != t), None) if len(teams) == 2 and t in teams else None
+
+
+def label_gameday(label: str) -> Optional[str]:
+    """ET calendar date (YYYY-MM-DD) from a label ending in "(2026-11-09 02:12 UTC)", else None."""
+    m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*UTC", str(label))
+    if not m:
+        return None
+    return pd.Timestamp(f"{m[1]} {m[2]}", tz="UTC").tz_convert("America/New_York").strftime("%Y-%m-%d")
+
+
+def _best(six: Any) -> Optional[Mapping[str, Any]]:
+    """The scored result for the recommended side, or None (also None for a not-scored reason string)."""
+    return six[six["best"]] if isinstance(six, Mapping) else None
+
+
+def tag_text(six: Any) -> str:
+    """Cell text: tier tag for 5/6 and 6/6, plain score otherwise; a dash plus the reason when not scored."""
+    if isinstance(six, str):
+        return f"— {six}"
     best = _best(six)
     if best is None:
         return "—"
@@ -416,7 +439,7 @@ def tag_text(six: Optional[Mapping[str, Any]]) -> str:
     return f"{best['score']}/6"
 
 
-def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Optional[Mapping[str, Any]]]) -> pd.DataFrame:
+def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Any]) -> pd.DataFrame:
     """Add the tag column to the odds-board table and list the best-scoring props first (stable)."""
     out = summary.copy()
     out[TAG_COL] = out["Player"].map(lambda p: tag_text(six_by_player.get(p)))
