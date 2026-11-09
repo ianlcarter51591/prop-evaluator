@@ -105,7 +105,8 @@ def presence(win: pd.DataFrame, pids: List[str], gkeys: List[int]) -> np.ndarray
 
 def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.DataFrame, season: int, cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Stat multiplier from injured / returning teammates, plus the table behind it."""
-    out: Dict[str, Any] = {"mult": 1.0, "table": [], "listed": [], "notes": [], "feed_ok": True, "share": None, "group": None}
+    out: Dict[str, Any] = {"mult": 1.0, "table": [], "listed": [], "notes": [], "feed_ok": True, "share": None, "group": None,
+                           "checked": False, "self_status": "", "qb_flag": ""}
     spec = STAT_MAP.get(stat)
     if spec is None:
         out["notes"].append(f"Injury adjustment skipped: no opportunity model for {stat.title()}.")
@@ -135,6 +136,14 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["feed_ok"] = feed_ok
     feed = (league.assign(KEY=clean_series(league["NAME"])).sort_values("P_OUT", ascending=False).drop_duplicates("KEY").set_index("KEY")
             if not league.empty else pd.DataFrame(columns=INJ_COLS))
+    # The player's own report status (for the six-point injury check); manual overrides apply to him too.
+    self_cn = pl.loc[pid, "CNAME"]
+    self_p = float(feed["P_OUT"].get(self_cn, 0.0)) if not feed.empty else 0.0
+    self_status = str(feed["STATUS"].get(self_cn, "")) if not feed.empty else ""
+    for k_, val, tag in (("manual_q", 0.5, "QUESTIONABLE (manual)"), ("manual_out", 1.0, "OUT (manual)"), ("manual_in", 0.0, "ACTIVE (manual)")):
+        if self_cn in {clean_name(n) for n in cfg.get(k_, [])}:
+            self_p, self_status = val, tag
+    out["self_status"] = (self_status or "listed") if self_p > 0 else ""
     pool = pl[(pl["G"] >= 3) & (pl["SHARE"] > 0) & pl["POS"].isin(RUSHERS if group == "rush" else RECEIVERS)]
     pids = pool.index.tolist()
     K = len(pids)
@@ -194,6 +203,8 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
             qcn = qbs.loc[qb, "CNAME"]
             qq = float(feed["P_OUT"].get(qcn, 0.0)) if not feed.empty else 0.0
             qq = 1.0 if qcn in {clean_name(x) for x in cfg.get("manual_out", [])} else qq
+            if qq > 0:
+                out["qb_flag"] = "QB1 OUT" if qq >= 0.99 else f"QB1 {qq:.0%} to miss"
             qb_games = set(win.loc[win["PID"] == qb, "GKEY"])
             qf = float(sum(wi for g, wi in zip(gk, wts) if g not in qb_games) * n / (n + N_PRIOR)) if n else 0.0
             pen = beta * (qq - qf)
@@ -206,6 +217,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["share"] = float(pl.loc[pid, "SHARE"]) * 100.0
     out["listed"] = [{"name": str(pool.iloc[j]["NAME"]), "status": status[j] or "listed", "p_out": float(q[j])}
                      for j in np.flatnonzero(listed) if j != i]
+    out["checked"] = True   # reached the end: listed teammates, QB and the player's own status are all populated
     show = np.flatnonzero((np.abs(net) > 0.02) & (np.abs(eff) > 1e-4))
     for j in show[np.argsort(-np.abs(eff[show]))]:
         label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: treated as returning (missed recent games)"
