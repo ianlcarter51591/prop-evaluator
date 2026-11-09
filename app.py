@@ -1,4 +1,4 @@
-"""NFL Prop Evaluator: real opponent-vs-position matchups, devigged edge, 6-Point Assessment Framework."""
+"""NFL Prop Evaluator: real opponent-vs-position matchups, devigged edge, 6-point criteria scanner."""
 import json
 import os
 from typing import Any, Dict, Optional
@@ -10,6 +10,7 @@ import streamlit as st
 
 from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
 from nfl_matchups import DEFAULT_K, run_backtests
+from nfl_six_point import BLOWOUT_SPREAD, RECENT_GAMES, GameInfo, assess, fetch_forecast, fetch_game_info
 from odds_api_client import (
     MARKETS,
     OddsApiError,
@@ -28,34 +29,122 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# High-Contrast Powder Blue UI Styling
 st.markdown(
     """
     <style>
-    .stApp { background-color: #ffffff !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display: none !important; }
-    .vision-card, [data-testid="stVerticalBlockBorderWrapper"], [data-testid="stExpander"], .vision-header {
-        background: #b9e6ff !important; border: 2px solid #7dd3fc !important; border-radius: 16px !important; box-shadow: 0 4px 14px rgba(0, 117, 255, 0.08) !important;
+    /* Pure White Main Background */
+    .stApp {
+        background-color: #ffffff !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
+        display: none !important;
+    }
+
+    /* Powder Blue Container Boxes, Cards & Expanders */
+    .vision-card, 
+    [data-testid="stVerticalBlockBorderWrapper"], 
+    [data-testid="stExpander"], 
+    .vision-header {
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 14px rgba(0, 117, 255, 0.08) !important;
     }
     .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
-    [data-testid="stExpander"] summary, [data-testid="stExpander"] summary * { color: #0f172a !important; font-weight: 800 !important; font-size: 16px !important; }
-    .vision-title { color: #0369a1 !important; font-size: 26px; font-weight: 900; margin: 0; }
-    .vision-sub { color: #0f172a !important; font-size: 13px; font-weight: 600; margin-top: 4px; }
+
+    /* Fix Expander Header Title Text */
+    [data-testid="stExpander"] summary, 
+    [data-testid="stExpander"] summary * {
+        color: #0f172a !important;
+        font-weight: 800 !important;
+        font-size: 16px !important;
+    }
+
+    /* Header Text Styling */
+    .vision-title {
+        color: #0369a1 !important;
+        font-size: 26px;
+        font-weight: 900;
+        margin: 0;
+    }
+
+    .vision-sub {
+        color: #0f172a !important;
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 4px;
+    }
+
+    /* Powder Blue Metric Boxes */
     [data-testid="stMetric"], .metric-box {
-        background: #b9e6ff !important; border: 2px solid #7dd3fc !important; border-radius: 12px !important; padding: 14px 18px !important; text-align: center;
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 12px !important;
+        padding: 14px 18px !important;
+        text-align: center;
     }
-    [data-testid="stMetricValue"], .metric-value { color: #0369a1 !important; font-size: 24px !important; font-weight: 900 !important; }
-    [data-testid="stMetricLabel"], .metric-label { color: #0f172a !important; font-size: 11px !important; font-weight: 800 !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }
-    .metric-value-green { color: #15803d !important; font-size: 24px !important; font-weight: 900 !important; }
-    label, p, span, div[data-testid="stMarkdownContainer"] p { color: #0f172a !important; font-weight: 700 !important; }
+    [data-testid="stMetricValue"], .metric-value {
+        color: #0369a1 !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+    }
+    [data-testid="stMetricLabel"], .metric-label {
+        color: #0f172a !important;
+        font-size: 11px !important;
+        font-weight: 800 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+    .metric-value-green {
+        color: #15803d !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+    }
+
+    /* Text & Label Overrides */
+    label, p, span, div[data-testid="stMarkdownContainer"] p {
+        color: #0f172a !important;
+        font-weight: 700 !important;
+    }
+
+    /* Input Fields & Dropdowns */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
-        background-color: #0f172a !important; color: #ffffff !important; border-radius: 10px !important; border: 2px solid #0284c7 !important; font-weight: 600 !important;
+        background-color: #0f172a !important;
+        color: #ffffff !important;
+        border-radius: 10px !important;
+        border: 2px solid #0284c7 !important;
+        font-weight: 600 !important;
     }
-    div[data-baseweb="select"] * { color: #ffffff !important; }
+
+    div[data-baseweb="select"] * {
+        color: #ffffff !important;
+    }
+
+    /* Action Buttons */
     .stButton>button, [data-testid="stFormSubmitButton"]>button {
-        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important; color: #ffffff !important; font-weight: 900 !important; border-radius: 10px !important; border: None !important; padding: 12px 20px !important; width: 100% !important;
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        color: #ffffff !important;
+        font-weight: 900 !important;
+        border-radius: 10px !important;
+        border: None !important;
+        padding: 12px 20px !important;
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3) !important;
+        width: 100% !important;
     }
-    .stButton>button *, [data-testid="stFormSubmitButton"]>button * { color: #ffffff !important; font-weight: 900 !important; }
-    [data-testid="stDataFrame"] { background-color: #ffffff !important; border: 2px solid #7dd3fc !important; border-radius: 10px !important; }
+    .stButton>button *, [data-testid="stFormSubmitButton"]>button * {
+        color: #ffffff !important;
+        font-weight: 900 !important;
+    }
+
+    /* Data Table Styling */
+    [data-testid="stDataFrame"] {
+        background-color: #ffffff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 10px !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -66,6 +155,7 @@ K_PATH = "matchup_k.json"
 
 
 def _secret(name: str) -> str:
+    """Read a secret from Streamlit secrets, falling back to environment variables."""
     try:
         if name in st.secrets:
             return str(st.secrets[name]).strip()
@@ -75,6 +165,7 @@ def _secret(name: str) -> str:
 
 
 def _to_american(x: float) -> int:
+    """Coerce a price to American odds (decimal odds such as 1.91 are converted instead of truncated to 1 or 2)."""
     x = float(x)
     if abs(x) >= 100:
         return int(round(x))
@@ -84,6 +175,7 @@ def _to_american(x: float) -> int:
 
 
 def load_k_file() -> Optional[Dict[str, float]]:
+    """Saved calibrated matchup weights (best effort; ephemeral on Streamlit Cloud)."""
     try:
         if os.path.exists(K_PATH):
             with open(K_PATH) as fh:
@@ -94,6 +186,7 @@ def load_k_file() -> Optional[Dict[str, float]]:
 
 
 def save_k_file(k: Optional[Dict[str, float]]) -> None:
+    """Persist (or clear) the calibrated weights."""
     try:
         if k is None:
             if os.path.exists(K_PATH):
@@ -106,6 +199,7 @@ def save_k_file(k: Optional[Dict[str, float]]) -> None:
 
 
 def sync_populate_to_widgets(stat_category: str, player: str, line: float, over: float, under: float) -> None:
+    """Directly update form widget state keys so inputs immediately reflect populated data."""
     ss = st.session_state
     ss["input_player"], ss["input_stat"], ss["input_line"] = player, stat_category, float(line)
     ss["input_over"], ss["input_under"] = _to_american(over), _to_american(under)
@@ -113,7 +207,85 @@ def sync_populate_to_widgets(stat_category: str, player: str, line: float, over:
     ss["pending_eval"] = True
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
+    """ESPN spread / kickoff / venue for the game (cached 5 minutes)."""
+    return fetch_game_info(team, opponent, gameday)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_forecast(lat: float, lon: float) -> Dict[str, Any]:
+    """Open-Meteo hourly forecast for a stadium (cached 30 minutes)."""
+    return fetch_forecast(lat, lon)
+
+
+def batch_assess_board(summary: pd.DataFrame, stat_category: str, season: int, matchup_k: Optional[Dict[str, float]]) -> pd.DataFrame:
+    """Evaluates all props in the live odds board and tags 5/6 (LEAN) and 6/6 (SHARP) plays."""
+    try:
+        weekly = load_weekly(season, 1)
+    except Exception:
+        weekly = None
+
+    tags = []
+    scores = []
+
+    for _, row in summary.iterrows():
+        p_name = str(row["Player"])
+        try:
+            line = float(row["Line"])
+            over_o = _to_american(row["Over"])
+            under_o = _to_american(row["Under"])
+        except (ValueError, KeyError):
+            tags.append("—")
+            scores.append("—")
+            continue
+
+        res = evaluate_prop(
+            player_name=p_name,
+            stat_category=stat_category,
+            line=line,
+            over_odds=over_o,
+            under_odds=under_o,
+            projection_source="Model (EWMA mean)",
+            season=season,
+            opponent="AUTO",
+            matchup_k=matchup_k,
+            adj_cfg={"injuries": True, "absorb_scale": 1.0},
+        )
+
+        if "error" in res:
+            tags.append("—")
+            scores.append("—")
+            continue
+
+        try:
+            six = assess(res, stat_category, line, weekly, season, cached_game_info, cached_forecast)
+            best_side = six["best"]
+            info = six[best_side]
+            score = info["score"]
+            side_str = f"{best_side} {line:g}"
+
+            if score == 6:
+                tags.append(f"🔥 6/6 SHARP ({side_str})")
+                scores.append("6/6 🔥")
+            elif score == 5:
+                tags.append(f"⚡ 5/6 LEAN ({side_str})")
+                scores.append("5/6 ⚡")
+            else:
+                tags.append("—")
+                scores.append(f"{score}/6")
+        except Exception:
+            tags.append("—")
+            scores.append("—")
+
+    out_df = summary.copy()
+    out_df["Score"] = scores
+    out_df["6-Point Tag"] = tags
+    return out_df
+
+
 def render_live_panel() -> None:
+    """Odds API loader: games -> board -> batch scan & tag -> populate form."""
     ss = st.session_state
     api_key = _secret("ODDS_API_KEY")
     with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
@@ -125,6 +297,8 @@ def render_live_panel() -> None:
             try:
                 events, _ = list_events("NFL", api_key)
                 ss["events"] = events
+                ss.pop("board", None)
+                ss.pop("scanned_summary", None)
             except OddsApiError as exc:
                 st.error(str(exc))
         events = ss.get("events")
@@ -134,12 +308,22 @@ def render_live_panel() -> None:
                 try:
                     board, _ = fetch_prop_board("NFL", str(events.loc[game_idx, "id"]), live_stat, ("draftkings",), api_key)
                     ss["board"] = board
+                    ss.pop("scanned_summary", None)
                 except OddsApiError as exc:
                     st.error(str(exc))
         board = ss.get("board")
         if board is not None and not board.empty:
             summary = summarize_board(board)
-            st.dataframe(summary, use_container_width=True)
+
+            c_head, c_btn = st.columns([3, 2])
+            c_head.markdown("#### Live Odds Board")
+            if c_btn.button("🎯 Scan & Tag 6-Point Scores (5/6 & 6/6)", key="scan_board"):
+                with st.spinner("Batch-evaluating props against 6-point criteria..."):
+                    ss["scanned_summary"] = batch_assess_board(summary, live_stat, default_season(), ss.get("matchup_k"))
+
+            display_df = ss.get("scanned_summary", summary)
+            st.dataframe(display_df, use_container_width=True)
+
             player_pick = st.selectbox("Step 4: Choose Player to Evaluate", summary["Player"].tolist(), key="pick_player")
             offers = player_offers(board, player_pick)
             if not offers.empty:
@@ -150,6 +334,7 @@ def render_live_panel() -> None:
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
+    """Render one metric card; tone in {'neutral','good','bad'}."""
     color = {"neutral": "#0369a1", "good": "#15803d", "bad": "#b91c1c"}[tone]
     col.markdown(
         f'<div class="metric-box"><div class="metric-label">{label}</div>'
@@ -159,10 +344,39 @@ def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
 
 
 def _tone(x: float) -> str:
+    """Metric tone from sign."""
     return "good" if x > 0 else "bad"
 
 
+def render_final_assessment(res: Dict[str, Any]) -> None:
+    """Final assessment: the six-point criteria for the recommended side (6/6 SHARP, 5/6 LEAN)."""
+    six = res.get("six_point")
+    if not six:
+        err = res.get("six_point_error")
+        if err:
+            st.caption(f"⚠️ Six-point assessment unavailable ({err}).")
+        return
+    best = six[six["best"]]
+    other = six["Under" if six["best"] == "Over" else "Over"]
+    tone = {"SHARP": "good", "LEAN": "neutral", "PASS": "bad"}[best["tier"]]
+    st.markdown("### 🏁 Final Assessment: 6-Point Check")
+    a, b, c = st.columns([1, 1, 2])
+    _metric(a, f"TIER · {res['best_side'].upper()}", best["tier"], tone)
+    _metric(b, "CRITERIA MET", f"{best['score']}/6", tone)
+    c.caption(f"6/6 = SHARP · 5/6 = LEAN · 4 or fewer = PASS. Scored for the model's best side ({best['side']}). "
+              f"The {other['side']} would score {other['score']}/6 ({other['tier']}). A check that can't be verified counts as failed.")
+    if best["tier"] != "PASS" and res["ev_pct"] <= 0:
+        st.warning("⚠️ The six-point score is positive but the model's EV at this price is not. Check the price before betting.")
+    for ck in best["checks"]:
+        icon = "✅" if ck["passed"] else ("⚪" if not ck["verified"] else "❌")
+        st.markdown(f"{icon} **{ck['label']}**: {ck['detail']}")
+    st.caption(f"Defensive ranks use what each defense allows this position group (season-long, and its last {RECENT_GAMES} games). "
+               f"Spread comes from the ESPN scoreboard (blowout = {BLOWOUT_SPREAD:g}+); weather is the Open-Meteo forecast for kickoff at outdoor stadiums. "
+               "Thresholds live at the top of nfl_six_point.py.")
+
+
 def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
+    """Real opponent-vs-position panel."""
     m = res.get("matchup")
     st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
     if not m:
@@ -176,14 +390,20 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
     _metric(c[2], f"{stat_category.upper()} ALLOWED / GM", f"{m['allowed']:.1f}")
     _metric(c[3], "LEAGUE AVG / INDEX", f"{m['league']:.1f} · {m['index']:.2f}x")
     _metric(c[4], "MATCHUP ADJ", f"x{m['mult']:.3f}", "good" if m["mult"] > 1.0005 else "bad" if m["mult"] < 0.9995 else "neutral")
-    src = "backtested" if m["calibrated"] else "default assumption"
-    st.caption(f"Allowed to {m['pos']}s per game, shrunk toward last season ({m['games']} games). Weight k = {m['k']:.2f} ({src}).")
+    src = "backtested" if m["calibrated"] else "default assumption; calibrate in the Matchup Backtest tab"
+    notes = [f"Allowed to {m['pos']}s per game, shrunk toward last season ({m['games']} games this season). Weight k = {m['k']:.2f} ({src})."]
+    if m.get("rest") is not None and m.get("opp_rest") is not None:
+        flag = lambda d: " (short week)" if d <= 6 else " (post-bye)" if d >= 13 else ""
+        notes.append(f"Rest days: you {m['rest']}{flag(m['rest'])}, opponent {m['opp_rest']}{flag(m['opp_rest'])}. Informational only; no adjustment.")
+    for n in notes:
+        st.caption(n)
     with st.expander(f"All 32 defenses vs {m['pos']} ({stat_category})"):
         board = m["board"].rename(columns={"EST": "ALLOWED (SHRUNK)", "CUR": "THIS SEASON"}).round(2)
         st.dataframe(board, use_container_width=True, hide_index=True)
 
 
 def _scoreboard_body() -> None:
+    """Grid of score cards for every NFL game."""
     rows = live_game.scoreboard()
     if not rows:
         st.caption("Live scoreboard unavailable right now.")
@@ -196,9 +416,11 @@ def _scoreboard_body() -> None:
             live = r["state"] == "in"
             score = f"{r['away']} {r['away_score']} – {r['home_score']} {r['home']}" if r["state"] != "pre" else f"{r['away']} @ {r['home']}"
             _metric(col, f"{star}{'🔴 LIVE · ' if live else ''}{r['detail']}", score, "good" if live else "neutral")
+    st.caption("Auto-refreshes every 20 seconds while any game is live.")
 
 
 def render_live_scoreboard() -> None:
+    """Scoreboard expander."""
     any_live = any(r["state"] == "in" for r in live_game.scoreboard())
     with st.expander("📺 Live NFL Scoreboard", expanded=True):
         if hasattr(st, "fragment"):
@@ -208,6 +430,7 @@ def render_live_scoreboard() -> None:
 
 
 def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
+    """Live score + clock + box score -> game-script-adjusted verdict."""
     ctx = st.session_state.get("last_ctx", {})
     st.markdown("### 🏈 Live Game Script")
     spec = live_game.spec_for(stat_category)
@@ -230,53 +453,41 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
         f'<div style="text-align:center;font-weight:700;color:#0369a1;margin-bottom:12px;">🔴 {game.detail}</div>',
         unsafe_allow_html=True,
     )
-    spread = st.number_input(f"Pregame spread for {game.team}", value=0.0, step=0.5, key="live_spread")
+    spread = st.number_input(
+        f"Pregame spread for {game.team} (negative = favorite, 0 = ignore)", value=0.0, step=0.5, key="live_spread",
+    )
     auto = live_game.fetch_player_stat(game.event_id, res["player_name"], spec)
     current = st.number_input(
-        f"{stat_category} so far", value=float(auto or 0.0), step=1.0, key=f"live_cur_{res['player_name']}_{stat_category}_{auto}"
+        f"{stat_category} so far", value=float(auto or 0.0), step=1.0, key=f"live_cur_{res['player_name']}_{stat_category}_{auto}",
     )
-    out = live_game.evaluate_live(res["mu"], spec, game, float(spread), float(current), float(ctx["line"]), float(ctx["over"]), float(ctx["under"]))
+    out = live_game.evaluate_live(res["mu"], spec, game, float(spread), float(current), float(ctx["line"]),
+                                  float(ctx["over"]), float(ctx["under"]))
     word = "Trailing" if out["lean"] < -0.05 else "Leading" if out["lean"] > 0.05 else "Even"
     flow = "pass-heavy" if out["lean"] < -0.05 else "run-heavy" if out["lean"] > 0.05 else "neutral"
     c = st.columns(6)
-    _metric(c[0], f"{game.team} vs {game.opp}", f"{game.team_score}-{game.opp_score}")
+    _metric(c[0], f"{game.team} vs {game.opp}", f"{game.team_score}-{game.opp_score} · {game.detail}")
     _metric(c[1], "GAME SCRIPT", f"{word} · {flow}", "good" if out["lean"] > 0.05 else "bad" if out["lean"] < -0.05 else "neutral")
     _metric(c[2], "SO FAR", f"{current:.1f}")
     _metric(c[3], "LIVE FINAL PROJ", f"{out['final_proj']:.1f}", _tone(out["final_proj"] - ctx["line"]))
-    _metric(c[4], "LIVE VERDICT", f"{out['side']} {ctx['line']}", _tone(out["ev_pct"]))
+    _metric(c[4], "LIVE VERDICT" if out["verdict"] == "PLAY" else "LIVE LEAN (PASS)", f"{out['side']} {ctx['line']}", _tone(out["ev_pct"]))
     _metric(c[5], "LIVE EV / EDGE", f"{out['ev_pct']:+.1f}% / {out['edge_pp']:+.1f}pp", _tone(out["ev_pct"]))
 
 
-def render_six_point_assessment(res: Dict[str, Any]) -> None:
-    """Render the 6-Point Sharp Assessment Evaluation for NFL props."""
-    eval_data = res.get("six_point_eval", {})
-    if not eval_data:
-        return
-
-    score = eval_data.get("score", 0)
-    verdict = eval_data.get("verdict", "PASS")
-    checks = eval_data.get("checks", {})
-
-    with st.expander(f"🎯 6-Point Sharp Assessment (Score: {score}/6 — {verdict})", expanded=True):
-        if score == 6:
-            st.success("🔥 **6/6 CRITERIA MET — SHARP PLAY CONFIRMED**")
-        elif score == 5:
-            st.warning("⚡ **5/6 CRITERIA MET — QUALIFIES AS A LEAN**")
-        else:
-            st.error(f"❌ **{score}/6 CRITERIA MET — PASS (INSUFFICIENT CONVICTION)**")
-
-        c1, c2 = st.columns(2)
-        items = list(checks.items())
-        
-        for idx, (title, (passed, detail)) in enumerate(items):
-            col = c1 if idx < 3 else c2
-            icon = "✅" if passed else "❌"
-            with col:
-                st.checkbox(f"{icon} {title}", value=passed, disabled=True, help=detail, key=f"nfl_six_check_cb_{idx}")
-                st.caption(f"↳ *{detail}*")
+def render_contextual_reality_check() -> None:
+    """Pre-flight contextual checklist."""
+    with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
+        st.markdown("Before locking in your bet, pass the model output through these real-world filters:")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.checkbox("1. Secure Volume & Usage", value=True)
+        with col2:
+            st.checkbox("2. Clean Schedule Spot", value=True)
+        with col3:
+            st.checkbox("3. Sharp Line Movement", value=True)
 
 
 def render_injury_usage(res: Dict[str, Any]) -> None:
+    """Injury panel."""
     inj = res.get("inj")
     if not inj:
         return
@@ -296,6 +507,7 @@ def render_injury_usage(res: Dict[str, Any]) -> None:
 
 
 def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
+    """Player vs Defense Tiers."""
     t = res.get("tiers")
     if not t:
         return
@@ -307,24 +519,23 @@ def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
 
 
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
+    """Renders complete evaluation output."""
     photo_col, title_col = st.columns([1, 6])
     photo = live_game.headshot_url(res["player_name"])
     if photo:
         photo_col.image(photo, width=120)
     title_col.markdown(f"## {res['player_name']} | {stat_category}")
     title_col.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
-    
-    score = (res.get("six_point_eval") or {}).get("score", 0)
-    verdict = res["verdict"]
-    tone = "good" if score == 6 else ("neutral" if score == 5 else "bad")
-
     c = st.columns(6)
     _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
     _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
-    _metric(c[2], "FINAL EVALUATION", f"{score}/6 {verdict}", tone)
+    _metric(c[2], "BEST SIDE (BY EV)", res["best_side"], _tone(res["ev_pct"]))
     _metric(c[3], "FAIR ODDS", f"{res['fair_odds']:+d}")
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
+    st.markdown("---")
+    render_final_assessment(res)
+    st.markdown("---")
     render_matchup(res, stat_category)
     render_injury_usage(res)
     render_tiers(res, stat_category)
@@ -339,10 +550,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     for w in res["warnings"]:
         st.caption(f"⚠️ {w}")
     st.markdown("---")
-    
-    render_six_point_assessment(res)
-    
-    st.markdown("---")
+    render_contextual_reality_check()
     st.markdown("### 📊 Game Log Performance")
     gl = pd.DataFrame(res["gamelog_details"])
     if gl.empty:
@@ -366,6 +574,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
 
 
 def render_matchup_backtest() -> None:
+    """Backtest panel."""
     ss = st.session_state
     st.markdown("Estimates **k** in `stat ÷ player's season average = 1 + k × (opponent index − 1)`.")
     c1, c2 = st.columns(2)
@@ -396,6 +605,7 @@ def render_matchup_backtest() -> None:
 
 
 def main() -> None:
+    """Streamlit entry point."""
     st.markdown(
         """
         <div class="vision-header" style="padding: 20px;">
@@ -419,11 +629,11 @@ def main() -> None:
         render_live_scoreboard()
         render_live_panel()
         with st.expander("🩺 Injuries & usage settings", expanded=False):
-            st.checkbox("Adjust for injured / returning teammates", key="adj_inj")
+            st.checkbox("Adjust for injured / returning teammates (target and carry share redistribution)", key="adj_inj")
             st.slider("Absorption strength", 0.5, 1.0, key="adj_absorb", step=0.05)
-            st.text_input("Teammates OUT", key="adj_out")
-            st.text_input("Teammates QUESTIONABLE", key="adj_q")
-            st.text_input("Teammates ACTIVE", key="adj_in")
+            st.text_input("Teammates OUT (comma-separated; adds to the ESPN feed)", key="adj_out")
+            st.text_input("Teammates QUESTIONABLE (counted as 50%)", key="adj_q")
+            st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
@@ -445,6 +655,15 @@ def main() -> None:
                                          "manual_out": [x.strip() for x in str(ss["adj_out"]).split(",") if x.strip()],
                                          "manual_q": [x.strip() for x in str(ss["adj_q"]).split(",") if x.strip()],
                                          "manual_in": [x.strip() for x in str(ss["adj_in"]).split(",") if x.strip()]})
+            if "error" not in res:
+                try:
+                    weekly = load_weekly(default_season(), 1)
+                except Exception:
+                    weekly = None
+                try:
+                    res["six_point"] = assess(res, stat_category, float(line_val), weekly, default_season(), cached_game_info, cached_forecast)
+                except Exception as e:
+                    res["six_point_error"] = str(e)
             ss["last_res"] = res
             ss["last_ctx"] = {"stat": stat_category, "line": float(line_val), "over": float(over_odds), "under": float(under_odds)}
         res = ss.get("last_res")
