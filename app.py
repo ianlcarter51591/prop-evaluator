@@ -13,8 +13,9 @@ from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop,
 from nfl_matchups import DEFAULT_K, run_backtests
 from nfl_six_point import (
     BLOWOUT_SPREAD, RECENT_GAMES, GameInfo, add_six_point_column, assess, fetch_forecast, fetch_game_info, game_matches,
-    style_tags,
+    label_gameday, opponent_from_label, style_tags,
 )
+from nfl_headshots import fetch_roster, player_photo
 from odds_api_client import (
     MARKETS,
     OddsApiError,
@@ -219,37 +220,53 @@ def _adj_cfg() -> Dict[str, Any]:
             "manual_out": split("adj_out"), "manual_q": split("adj_q"), "manual_in": split("adj_in")}
 
 
-def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Optional[Dict[str, Any]]]:
-    """Evaluate every player on the odds board and return each one's six-point result.
+def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
+    """Evaluate every player on the odds board; map each to his six-point result or to the reason he wasn't scored.
 
-    Each player is evaluated against his next scheduled opponent (Auto); he is scored only if that game
-    is the one selected in Step 2. Players who fail evaluation or aren't in that game map to None.
+    A player is evaluated against his next scheduled opponent (Auto). If that isn't the game selected in Step 2
+    (for example on game day, when the schedule has already moved on) he is re-evaluated against the other team in
+    the selected game. Players who aren't on either team in that game are skipped.
     """
     ss = st.session_state
-    out: Dict[str, Optional[Dict[str, Any]]] = {}
+    out: Dict[str, Any] = {}
     try:
         weekly: Optional[pd.DataFrame] = load_weekly(default_season(), 1)
     except Exception:
         weekly = None
+    gameday = label_gameday(game_label)
     n = len(summary)
+
+    def run(name: str, r: pd.Series, opponent: str) -> Dict[str, Any]:
+        return evaluate_prop(player_name=name, stat_category=stat_category, line=float(r["Line"]), over_odds=float(r["Over"]),
+                             under_odds=float(r["Under"]), projection_source=ss.get("input_source", SOURCES[0]),
+                             season=default_season(), opponent=opponent, matchup_k=ss.get("matchup_k"), adj_cfg=_adj_cfg())
+
     for k, (_, r) in enumerate(summary.iterrows()):
         name = str(r["Player"])
-        if r[["Line", "Over", "Under"]].isna().any():     # incomplete offer: nothing to score
-            out[name] = None
+        if r[["Line", "Over", "Under"]].isna().any():
+            out[name] = "incomplete odds"
             continue
         if progress is not None:
             progress.progress(k / max(n, 1), text=f"Scanning {name} ({k + 1}/{n})")
         try:
-            res = evaluate_prop(player_name=name, stat_category=stat_category, line=float(r["Line"]), over_odds=float(r["Over"]),
-                                under_odds=float(r["Under"]), projection_source=ss.get("input_source", SOURCES[0]),
-                                season=default_season(), opponent="AUTO", matchup_k=ss.get("matchup_k"), adj_cfg=_adj_cfg())
-            m = res.get("matchup") or {}
-            if "error" in res or not game_matches(game_label, res.get("team"), m.get("opponent")):
-                out[name] = None
+            res = run(name, r, "AUTO")
+            if "error" in res:
+                out[name] = str(res["error"])[:70]
                 continue
+            if not game_matches(game_label, res.get("team"), (res.get("matchup") or {}).get("opponent")):
+                opp = opponent_from_label(game_label, res.get("team"))
+                if opp is None:
+                    out[name] = f"{res.get('team')} isn't in this game"
+                    continue
+                res = run(name, r, opp)
+                if "error" in res:
+                    out[name] = str(res["error"])[:70]
+                    continue
+            if res.get("matchup") and gameday:
+                res["matchup"] = {**res["matchup"], "gameday": gameday}
             out[name] = assess(res, stat_category, float(r["Line"]), weekly, default_season(), cached_game_info, cached_forecast)
-        except Exception:
-            out[name] = None
+        except Exception as e:
+            out[name] = f"error: {str(e)[:60]}"
     if progress is not None:
         progress.progress(1.0, text="Scan complete")
     return out
@@ -288,8 +305,13 @@ def render_live_panel() -> None:
             if scan is not None and scan["token"] == ss.get("board_token"):
                 shown = add_six_point_column(summary, scan["six"])
             st.dataframe(style_tags(shown) if "Six-Point" in shown else shown, use_container_width=True)
-            st.caption("🔥 SHARP = 6/6 criteria · ⚡ LEAN = 5/6 · other rows show their score · — = couldn't be scored (not in this game, "
-                       "or the player's next scheduled game is a different one). Each prop is scored on its best side by EV.")
+            st.caption("🔥 SHARP = 6/6 criteria · ⚡ LEAN = 5/6 · other rows show their score · a dash shows why a player wasn't scored. "
+                       "Each prop is scored on its best side by EV.")
+            if "Six-Point" in shown:
+                tags = shown["Six-Point"].astype(str)
+                scored = int((~tags.str.startswith("—")).sum())
+                st.caption(f"Last scan: {int(tags.str.startswith('🔥').sum())} SHARP · {int(tags.str.startswith('⚡').sum())} LEAN · "
+                           f"{scored} of {len(tags)} props scored.")
             if st.button("🔎 Scan board for 5/6 & 6/6 props", key="scan_board_btn"):
                 bar = st.progress(0.0, text="Starting scan...")
                 ss["board_scan"] = {"token": ss.get("board_token"), "six": scan_board(summary, live_stat, ss.get("board_game_label", ""), bar)}
@@ -313,6 +335,22 @@ def cached_game_info(team: str, opponent: Optional[str], gameday: Optional[str])
 def cached_forecast(lat: float, lon: float) -> Dict[str, Any]:
     """Open-Meteo hourly forecast for a stadium (cached 30 minutes)."""
     return fetch_forecast(lat, lon)
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def cached_roster(team: str) -> Dict[str, Any]:
+    """ESPN team roster (cached 6 hours) for team-aware headshots."""
+    return fetch_roster(team)
+
+
+def _player_photo(res: Dict[str, Any]) -> Optional[str]:
+    """Headshot of the evaluated player on HIS team (a name-only search shows the wrong 'Josh Allen')."""
+    if not res.get("team"):
+        return live_game.headshot_url(res["player_name"])
+    try:
+        return player_photo(res["player_name"], res["team"], res.get("pos"), cached_roster)
+    except Exception:
+        return None
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
@@ -529,7 +567,7 @@ def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
     """Metric cards, matchup panel, notes, and the game-log chart."""
     photo_col, title_col = st.columns([1, 6])
-    photo = live_game.headshot_url(res["player_name"])
+    photo = _player_photo(res)
     if photo:
         photo_col.image(photo, width=120)
     title_col.markdown(f"## {res['player_name']} | {stat_category}")
