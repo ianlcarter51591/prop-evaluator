@@ -1,430 +1,729 @@
-"""Six-point prop criteria for the NFL Prop Evaluator.
-
-Score = number of passed checks for a side:  6/6 -> SHARP,  5/6 -> LEAN,  <= 4/6 -> PASS.
-A check that cannot be verified counts as NOT passed (and is shown as unverified).
-"""
-
-from __future__ import annotations
-
-import re
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+"""NFL Prop Evaluator: real opponent-vs-position matchups, devigged edge, calibrated matchup weights."""
+import json
+import uuid
+import os
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 
-from nfl_matchups import _defense_games
+from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
+from nfl_matchups import DEFAULT_K, run_backtests
+from nfl_six_point import (
+    BLOWOUT_SPREAD, RECENT_GAMES, GameInfo, add_six_point_column, assess, fetch_forecast, fetch_game_info, game_matches,
+    label_gameday, opponent_from_label, style_tags,
+)
+from nfl_headshots import fetch_roster, player_photo
+from odds_api_client import (
+    MARKETS,
+    OddsApiError,
+    fetch_prop_board,
+    list_events,
+    player_offers,
+    summarize_board,
+)
+from sports_data import NFL_TEAMS, load_weekly
+import live_game
 
-# --- Thresholds (edit freely) -------------------------------------------------
-MIN_LINE: Dict[str, float] = {
-    "PASSING YARDS": 175.5, "PASS YARDS": 175.5,
-    "PASS COMPLETIONS": 14.5,
-    "PASS ATTEMPTS": 24.5,
-    "PASSING TDS": 1.5, "PASS TDS": 1.5,
-    "RUSHING YARDS": 35.5, "RUSH YARDS": 35.5,
-    "RUSHING ATTEMPTS": 8.5, "RUSH ATTEMPTS": 8.5,
-    "RECEIVING YARDS": 35.5, "REC YARDS": 35.5,
-    "RECEPTIONS": 3.5,
-    "INTERCEPTIONS": 0.5, "PASS INTS": 0.5,
-}
-MIN_EDGE_ABS: Dict[str, float] = {
-    "PASSING YARDS": 12.0, "PASS YARDS": 12.0,
-    "PASS COMPLETIONS": 1.5,
-    "PASS ATTEMPTS": 2.0,
-    "PASSING TDS": 0.25, "PASS TDS": 0.25,
-    "RUSHING YARDS": 6.0, "RUSH YARDS": 6.0,
-    "RUSHING ATTEMPTS": 1.5, "RUSH ATTEMPTS": 1.5,
-    "RECEIVING YARDS": 6.0, "REC YARDS": 6.0,
-    "RECEPTIONS": 0.75,
-    "INTERCEPTIONS": 0.15, "PASS INTS": 0.15,
-}
-MIN_EDGE_PCT = 0.06
-IMPLIED_MIN = 0.50
-RANK_CUTOFF = 16            # half of a 32-team league
-RECENT_GAMES = 4            # "recent" = each defense's last 4 games this season
-RECENT_MIN_GAMES = 2        # fewer than this and the recent rank is unverified
-BLOWOUT_SPREAD = 10.0
-WIND_MPH, GUST_MPH, PRECIP_MM, SNOW_CM, COLD_F = 15.0, 25.0, 3.0, 0.5, 20.0
-WEATHER_HOURS = 3
-SHARP_SCORE, LEAN_SCORE = 6, 5
+st.set_page_config(
+    page_title="NFL Prop Evaluator",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
-ABBR_CANON: Dict[str, str] = {"WSH": "WAS", "LAR": "LA", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LA"}
-STADIUMS: Dict[str, Tuple[float, float, str]] = {
-    "ARI": (33.5276, -112.2626, "retractable"), "ATL": (33.7554, -84.4010, "dome"),
-    "BAL": (39.2780, -76.6227, "outdoor"), "BUF": (42.7738, -78.7870, "outdoor"),
-    "CAR": (35.2258, -80.8528, "outdoor"), "CHI": (41.8623, -87.6167, "outdoor"),
-    "CIN": (39.0955, -84.5161, "outdoor"), "CLE": (41.5061, -81.6995, "outdoor"),
-    "DAL": (32.7473, -97.0945, "retractable"), "DEN": (39.7439, -105.0201, "outdoor"),
-    "DET": (42.3400, -83.0456, "dome"), "GB": (44.5013, -88.0622, "outdoor"),
-    "HOU": (29.6847, -95.4107, "retractable"), "IND": (39.7601, -86.1639, "retractable"),
-    "JAX": (30.3239, -81.6373, "outdoor"), "KC": (39.0489, -94.4839, "outdoor"),
-    "LA": (33.9535, -118.3392, "canopy"), "LAC": (33.9535, -118.3392, "canopy"),
-    "LV": (36.0909, -115.1833, "dome"), "MIA": (25.9580, -80.2389, "outdoor"),
-    "MIN": (44.9735, -93.2575, "dome"), "NE": (42.0909, -71.2643, "outdoor"),
-    "NO": (29.9511, -90.0812, "dome"), "NYG": (40.8135, -74.0745, "outdoor"),
-    "NYJ": (40.8135, -74.0745, "outdoor"), "PHI": (39.9008, -75.1675, "outdoor"),
-    "PIT": (40.4468, -80.0158, "outdoor"), "SEA": (47.5952, -122.3316, "outdoor"),
-    "SF": (37.4030, -121.9700, "outdoor"), "TB": (27.9759, -82.5033, "outdoor"),
-    "TEN": (36.1665, -86.7713, "outdoor"), "WAS": (38.9076, -76.8645, "outdoor"),
-}
+# High-Contrast Powder Blue UI Styling
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #ffffff !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
 
+    [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
+        display: none !important;
+    }
 
-def canon_stat(stat: str) -> str:
-    """Canonicalize stat category to standard nflverse/threshold keys."""
-    s = str(stat or "").upper().strip().replace("_", " ")
-    s = re.sub(r"^PLAYER\s+", "", s)
-    if "PASS" in s and "YARD" in s: return "PASSING YARDS"
-    if "PASS" in s and "COMP" in s: return "PASS COMPLETIONS"
-    if "PASS" in s and "ATT" in s: return "PASS ATTEMPTS"
-    if "PASS" in s and "TD" in s: return "PASSING TDS"
-    if "PASS" in s and ("INT" in s or "INTERCEPTION" in s): return "INTERCEPTIONS"
-    if "RUSH" in s and "YARD" in s: return "RUSHING YARDS"
-    if "RUSH" in s and "ATT" in s: return "RUSHING ATTEMPTS"
-    if ("REC" in s or "RECEIVING" in s) and "YARD" in s: return "RECEIVING YARDS"
-    if "REC" in s or "RECEPTION" in s: return "RECEPTIONS"
-    if "INT" in s: return "INTERCEPTIONS"
-    return s
+    .vision-card, 
+    [data-testid="stVerticalBlockBorderWrapper"], 
+    [data-testid="stExpander"], 
+    .vision-header {
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 14px rgba(0, 117, 255, 0.08) !important;
+    }
+    .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
 
+    [data-testid="stExpander"] summary, 
+    [data-testid="stExpander"] summary * {
+        color: #0f172a !important;
+        font-weight: 800 !important;
+        font-size: 16px !important;
+    }
 
-def canon(abbr: Any) -> str:
-    """Upper-case team code mapped to the nflverse convention."""
-    a = str(abbr or "").upper().strip()
-    return ABBR_CANON.get(a, a)
+    .vision-title {
+        color: #0369a1 !important;
+        font-size: 26px;
+        font-weight: 900;
+        margin: 0;
+    }
 
+    .vision-sub {
+        color: #0f172a !important;
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 4px;
+    }
 
-@dataclass(frozen=True)
-class Check:
-    key: str
-    label: str
-    passed: bool
-    detail: str
-    verified: bool = True
+    [data-testid="stMetric"], .metric-box {
+        background: #b9e6ff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 12px !important;
+        padding: 14px 18px !important;
+        text-align: center;
+    }
+    [data-testid="stMetricValue"], .metric-value {
+        color: #0369a1 !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+    }
+    [data-testid="stMetricLabel"], .metric-label {
+        color: #0f172a !important;
+        font-size: 11px !important;
+        font-weight: 800 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+    .metric-value-green {
+        color: #15803d !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+    }
 
+    label, p, span, div[data-testid="stMarkdownContainer"] p {
+        color: #0f172a !important;
+        font-weight: 700 !important;
+    }
 
-@dataclass(frozen=True)
-class SixPointResult:
-    side: str
-    score: int
-    tier: str
-    checks: Tuple[Check, ...]
+    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
+        background-color: #0f172a !important;
+        color: #ffffff !important;
+        border-radius: 10px !important;
+        border: 2px solid #0284c7 !important;
+        font-weight: 600 !important;
+    }
 
-    def as_dict(self) -> Dict[str, Any]:
-        return {"side": self.side, "score": self.score, "tier": self.tier,
-                "checks": [c.__dict__.copy() for c in self.checks]}
+    div[data-baseweb="select"] * {
+        color: #ffffff !important;
+    }
 
+    .stButton>button, [data-testid="stFormSubmitButton"]>button {
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        color: #ffffff !important;
+        font-weight: 900 !important;
+        border-radius: 10px !important;
+        border: None !important;
+        padding: 12px 20px !important;
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3) !important;
+        width: 100% !important;
+    }
+    .stButton>button *, [data-testid="stFormSubmitButton"]>button * {
+        color: #ffffff !important;
+        font-weight: 900 !important;
+    }
 
-@dataclass(frozen=True)
-class GameInfo:
-    home: str
-    away: str
-    kickoff_iso: str
-    spread: Optional[float]
-    neutral: bool
-    indoor: Optional[bool]
+    [data-testid="stDataFrame"] {
+        background-color: #ffffff !important;
+        border: 2px solid #7dd3fc !important;
+        border-radius: 10px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-
-@dataclass(frozen=True)
-class Weather:
-    verified: bool
-    bad: bool
-    detail: str
-
-
-def tier_for(score: int) -> str:
-    return "SHARP" if score >= SHARP_SCORE else "LEAN" if score == LEAN_SCORE else "PASS"
-
-
-def check_line(stat: str, line: float) -> Check:
-    c_stat = canon_stat(stat)
-    need = MIN_LINE.get(c_stat, MIN_LINE.get(stat, 0.0))
-    ok = bool(line >= need)
-    return Check("baby_line", "1. Line High Enough (Baby Line)", ok,
-                 f"Line {line:g} vs minimum {need:g} for this stat" + ("" if ok else ": too low, too risky"))
-
-
-def check_edge(side: str, stat: str, line: float, proj: float) -> Check:
-    c_stat = canon_stat(stat)
-    margin = proj - line if side == "Over" else line - proj
-    need = max(MIN_EDGE_ABS.get(c_stat, MIN_EDGE_ABS.get(stat, 0.0)), MIN_EDGE_PCT * abs(line))
-    ok = bool(margin >= need)
-    return Check("ai_edge", "2. AI Edge", ok,
-                 f"Projection {proj:.1f} is {margin:+.1f} {'above' if side == 'Over' else 'below'} "
-                 f"the line in your direction; needs at least {need:.1f}")
-
-
-def check_implied(side: str, p_market: float) -> Check:
-    ok = bool(p_market > IMPLIED_MIN)
-    return Check("implied_chance", "3. Implied Chance", ok,
-                 f"Devigged DraftKings price gives {side} {p_market:.1%} (needs more than {IMPLIED_MIN:.0%}); single book, no multi-book vote")
+AUTO_OPP = "Auto (next game)"
+K_PATH = "matchup_k.json"
 
 
-def rank_supports(side: str, rank: int, n_teams: int, cutoff: int = RANK_CUTOFF) -> bool:
-    return rank <= cutoff if side == "Over" else rank > n_teams - cutoff
-
-
-def check_defense(side: str, season_rank: Optional[int], season_n: Optional[int],
-                  recent_rank: Optional[int], recent_n: Optional[int], pos: str = "") -> Check:
-    label = "4. Defensive Rank"
-    if None in (season_rank, season_n, recent_rank, recent_n):
-        have = "season" if season_rank is not None else "recent" if recent_rank is not None else "neither"
-        return Check("defensive_rank", label, False,
-                     f"Not verified ({have} rank available): pick an opponent (or Auto) and make sure the weekly data loaded", verified=False)
-    ok = rank_supports(side, season_rank, season_n) and rank_supports(side, recent_rank, recent_n)
-    want = f"{RANK_CUTOFF} softest" if side == "Over" else f"{RANK_CUTOFF} toughest"
-    return Check("defensive_rank", label, bool(ok),
-                 f"Vs {pos or 'position'}s: season #{season_rank} of {season_n}, last {RECENT_GAMES} games #{recent_rank} of {recent_n} "
-                 f"(1 = softest); {side} needs both in the {want}")
-
-
-def flagged_players(inj: Mapping[str, Any]) -> List[str]:
-    out: List[str] = []
-    if inj.get("self_status"):
-        out.append(f"the player ({inj['self_status']})")
-    out += [f"{x['name']} ({x['status']})" for x in inj.get("listed", []) if x.get("p_out", 0.0) > 0]
-    if inj.get("qb_flag"):
-        out.append(str(inj["qb_flag"]))
-    return out
-
-
-def check_injury(inj: Optional[Mapping[str, Any]]) -> Check:
-    label = "5. Injury"
-    if not inj or not inj.get("checked") or not inj.get("feed_ok", False):
-        return Check("injury", label, False,
-                     "Not verified: injury feed unavailable, injury adjustment turned off, or the player has no regular share", verified=False)
-    flagged = flagged_players(inj)
-    return Check("injury", label, not flagged,
-                 "No active injury flags on the team" if not flagged else "Flagged: " + ", ".join(flagged))
-
-
-def check_game_script(spread: Optional[float], weather: Optional[Weather]) -> Check:
-    label = "6. Game Script"
-    if spread is None or weather is None or not weather.verified:
-        parts = []
-        if spread is None:
-            parts.append("spread unavailable")
-        if weather is None or not weather.verified:
-            parts.append(weather.detail if weather else "weather unavailable")
-        return Check("game_script", label, False, "Not verified: " + "; ".join(parts), verified=False)
-    blow = abs(spread) >= BLOWOUT_SPREAD
-    ok = (not blow) and (not weather.bad)
-    spread_txt = f"Spread {abs(spread):g}" + (f" (blowout risk at {BLOWOUT_SPREAD:g}+)" if blow else "")
-    return Check("game_script", label, bool(ok), f"{spread_txt}; {weather.detail}")
-
-
-def score_prop(side: str, stat: str, line: float, proj: float, p_market: float,
-               season_rank: Optional[int], season_n: Optional[int], recent_rank: Optional[int],
-               recent_n: Optional[int], pos: str, inj: Optional[Mapping[str, Any]],
-               spread: Optional[float], weather: Optional[Weather]) -> SixPointResult:
-    checks = (
-        check_line(stat, line),
-        check_edge(side, stat, line, proj),
-        check_implied(side, p_market),
-        check_defense(side, season_rank, season_n, recent_rank, recent_n, pos),
-        check_injury(inj),
-        check_game_script(spread, weather),
-    )
-    score = int(np.sum([c.passed for c in checks]))
-    return SixPointResult(side=side, score=score, tier=tier_for(score), checks=checks)
-
-
-def recent_defense_rank(weekly: pd.DataFrame, stat: str, pos: str, season: int, opponent: str,
-                        n_recent: int = RECENT_GAMES, min_games: int = RECENT_MIN_GAMES
-                        ) -> Tuple[Optional[int], Optional[int]]:
-    c_stat = canon_stat(stat)
-    g = _defense_games(weekly, c_stat, pos)
-    g = g[g["SEASON"] == season].sort_values(["OPP", "WEEK"])
-    g = g[g.groupby("OPP").cumcount(ascending=False) < n_recent]
-    agg = g.groupby("OPP")["V"].agg(["mean", "size"])
-    agg = agg[agg["size"] >= min_games]
-    opp = canon(opponent)
-    if opp not in agg.index:
-        return None, None
-    rank = agg["mean"].rank(ascending=False, method="min")
-    return int(rank[opp]), int(len(agg))
-
-
-def _spread_from_odds(odds: Any) -> Optional[float]:
-    for o in odds or []:
-        sp = o.get("spread")
-        if isinstance(sp, (int, float)) and not isinstance(sp, bool):
-            return abs(float(sp))
-        det = str(o.get("details") or "")
-        if re.search(r"\b(EVEN|PK|PICK)\b", det, re.IGNORECASE):
-            return 0.0
-        m = re.search(r"([+-]\d+(?:\.\d+)?)\s*$", det)
-        if m:
-            return abs(float(m[1]))
-    return None
-
-
-def parse_scoreboard_game(payload: Mapping[str, Any], team: str, opponent: Optional[str] = None) -> Optional[GameInfo]:
-    t, o = canon(team), canon(opponent) if opponent else None
-    for ev in payload.get("events", []):
-        comp = (ev.get("competitions") or [{}])[0]
-        teams = {c.get("homeAway"): canon((c.get("team") or {}).get("abbreviation")) for c in comp.get("competitors", [])}
-        if t not in teams.values() or (o and o not in teams.values()):
-            continue
-        return GameInfo(home=teams.get("home", ""), away=teams.get("away", ""),
-                        kickoff_iso=str(comp.get("date") or ev.get("date") or ""),
-                        spread=_spread_from_odds(comp.get("odds")), neutral=bool(comp.get("neutralSite")),
-                        indoor=(comp.get("venue") or {}).get("indoor"))
-    return None
-
-
-def summarize_forecast(payload: Mapping[str, Any], kickoff_iso: str, hours: int = WEATHER_HOURS) -> Optional[Dict[str, float]]:
-    h = payload.get("hourly") or {}
-    if not h.get("time"):
-        return None
-    start = pd.Timestamp(kickoff_iso).tz_convert("UTC").floor("h")
-    times = pd.to_datetime(pd.Series(h["time"]), utc=True)
-    mask = ((times >= start) & (times < start + pd.Timedelta(hours=hours))).to_numpy()
-    if not mask.any():
-        return None
-    col = lambda k: np.nan_to_num(np.asarray(h.get(k) or [0.0] * len(times), dtype=float)[mask])
-    return {"wind": float(col("wind_speed_10m").max()), "gust": float(col("wind_gusts_10m").max()),
-            "precip": float(col("precipitation").sum()), "snow": float(col("snowfall").sum()),
-            "temp": float(col("temperature_2m").min())}
-
-
-def judge_weather(w: Mapping[str, float]) -> Weather:
-    problems = [txt for bad, txt in (
-        (w["wind"] >= WIND_MPH or w["gust"] >= GUST_MPH, f"wind {w['wind']:.0f} mph (gusts {w['gust']:.0f})"),
-        (w["precip"] >= PRECIP_MM, f"rain {w['precip']:.1f} mm"),
-        (w["snow"] >= SNOW_CM, f"snow {w['snow']:.1f} cm"),
-        (w["temp"] <= COLD_F, f"{w['temp']:.0f}°F"),
-    ) if bad]
-    base = f"forecast wind {w['wind']:.0f} mph, {w['temp']:.0f}°F, precip {w['precip']:.1f} mm"
-    return Weather(True, bool(problems), ("bad weather: " + ", ".join(problems)) if problems else "weather " + base)
-
-
-def game_weather(info: Optional[GameInfo], fetch_forecast: Callable[[float, float], Mapping[str, Any]]) -> Weather:
-    if info is None:
-        return Weather(False, False, "game not found on the ESPN scoreboard, weather not checked")
-    if info.neutral:
-        return Weather(False, False, "neutral-site game, weather not checked")
-    lat_lon_roof = STADIUMS.get(canon(info.home))
-    if lat_lon_roof is None:
-        return Weather(False, False, f"unknown stadium for {info.home}, weather not checked")
-    lat, lon, roof = lat_lon_roof
-    if roof != "outdoor" or info.indoor:
-        return Weather(True, False, f"{roof if roof != 'outdoor' else 'indoor'} stadium, no weather risk")
+def _secret(name: str) -> str:
     try:
-        summary = summarize_forecast(fetch_forecast(lat, lon), info.kickoff_iso)
-    except Exception as e:
-        return Weather(False, False, f"forecast unavailable ({e})")
-    if summary is None:
-        return Weather(False, False, "no forecast hours for kickoff (beyond the 16-day window?)")
-    return judge_weather(summary)
-
-
-def fetch_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
-    import requests
-    day = pd.Timestamp(gameday) if gameday else pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
-    end = day if gameday else day + pd.Timedelta(days=14)
-    dates = day.strftime("%Y%m%d") if gameday else f"{day:%Y%m%d}-{end:%Y%m%d}"
-    resp = requests.get(ESPN_SCOREBOARD, params={"dates": dates, "limit": 100}, timeout=8)
-    resp.raise_for_status()
-    return parse_scoreboard_game(resp.json(), team, opponent)
-
-
-def fetch_forecast(lat: float, lon: float) -> Dict[str, Any]:
-    import requests
-    params = {"latitude": lat, "longitude": lon, "forecast_days": 16, "timezone": "UTC",
-              "hourly": "temperature_2m,precipitation,snowfall,wind_speed_10m,wind_gusts_10m",
-              "temperature_unit": "fahrenheit", "wind_speed_unit": "mph", "precipitation_unit": "mm"}
-    resp = requests.get(OPEN_METEO, params=params, timeout=8)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def assess(res: Mapping[str, Any], stat_category: str, line: float, weekly: Optional[pd.DataFrame], season: int,
-           get_game: Callable[[str, Optional[str], Optional[str]], Optional[GameInfo]] = fetch_game_info,
-           get_forecast: Callable[[float, float], Mapping[str, Any]] = fetch_forecast) -> Dict[str, Any]:
-    stat = canon_stat(stat_category)
-    best = "Over" if str(res["best_side"]).startswith("Over") else "Under"
-    p_best = float(res["p_market"]) / 100.0
-    m = res.get("matchup") or {}
-    recent_rank = recent_n = None
-    if m and weekly is not None:
-        recent_rank, recent_n = recent_defense_rank(weekly, stat, m["pos"], season, m["opponent"])
-    try:
-        info = get_game(str(res["team"]), m.get("opponent"), m.get("gameday"))
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
     except Exception:
-        info = None
-    weather = game_weather(info, get_forecast)
-    out: Dict[str, Any] = {"best": best}
-    for side, p in (("Over", p_best if best == "Over" else 1.0 - p_best), ("Under", p_best if best == "Under" else 1.0 - p_best)):
-        out[side] = score_prop(side, stat, float(line), float(res["mu"]), p, m.get("rank"), m.get("n_teams"),
-                               recent_rank, recent_n, str(m.get("pos", "")), res.get("inj"),
-                               info.spread if info else None, weather).as_dict()
+        pass
+    return os.environ.get(name, "").strip()
+
+
+def _to_american(x: float) -> int:
+    x = float(x)
+    if abs(x) >= 100:
+        return int(round(x))
+    if x > 1.0:
+        return int(round((x - 1.0) * 100.0)) if x >= 2.0 else int(round(-100.0 / (x - 1.0)))
+    return -110
+
+
+def load_k_file() -> Optional[Dict[str, float]]:
+    try:
+        if os.path.exists(K_PATH):
+            with open(K_PATH) as fh:
+                return json.load(fh)
+    except Exception:
+        pass
+    return None
+
+
+def save_k_file(k: Optional[Dict[str, float]]) -> None:
+    try:
+        if k is None:
+            if os.path.exists(K_PATH):
+                os.remove(K_PATH)
+        else:
+            with open(K_PATH, "w") as fh:
+                json.dump(k, fh)
+    except Exception:
+        pass
+
+
+def sync_populate_to_widgets(stat_category: str, player: str, line: float, over: float, under: float) -> None:
+    ss = st.session_state
+    ss["input_player"], ss["input_stat"], ss["input_line"] = player, stat_category, float(line)
+    ss["input_over"], ss["input_under"] = _to_american(over), _to_american(under)
+    ss["input_opp"] = AUTO_OPP
+    ss["pending_eval"] = True
+
+
+def _adj_cfg() -> Dict[str, Any]:
+    ss = st.session_state
+    split = lambda key: [x.strip() for x in str(ss[key]).split(",") if x.strip()]
+    return {"injuries": ss["adj_inj"], "absorb_scale": float(ss["adj_absorb"]),
+            "manual_out": split("adj_out"), "manual_q": split("adj_q"), "manual_in": split("adj_in")}
+
+
+def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
+    ss = st.session_state
+    out: Dict[str, Any] = {}
+    try:
+        weekly: Optional[pd.DataFrame] = load_weekly(default_season(), 1)
+    except Exception:
+        weekly = None
+    gameday = label_gameday(game_label)
+    n = len(summary)
+
+    def run(name: str, r: pd.Series, opponent: str) -> Dict[str, Any]:
+        return evaluate_prop(
+            player_name=name,
+            stat_category=stat_category,
+            line=float(r["Line"]),
+            over_odds=_to_american(r["Over"]),
+            under_odds=_to_american(r["Under"]),
+            projection_source=ss.get("input_source", SOURCES[0]),
+            season=default_season(),
+            opponent=opponent,
+            matchup_k=ss.get("matchup_k"),
+            adj_cfg=_adj_cfg(),
+        )
+
+    for k, (_, r) in enumerate(summary.iterrows()):
+        name = str(r["Player"])
+        if r[["Line", "Over", "Under"]].isna().any():
+            out[name] = "incomplete odds"
+            continue
+        if progress is not None:
+            progress.progress(k / max(n, 1), text=f"Scanning {name} ({k + 1}/{n})")
+        try:
+            res = run(name, r, "AUTO")
+            if "error" in res:
+                out[name] = str(res["error"])[:70]
+                continue
+            if not game_matches(game_label, res.get("team"), (res.get("matchup") or {}).get("opponent")):
+                opp = opponent_from_label(game_label, res.get("team"))
+                if opp is None:
+                    out[name] = f"{res.get('team')} isn't in this game"
+                    continue
+                res = run(name, r, opp)
+                if "error" in res:
+                    out[name] = str(res["error"])[:70]
+                    continue
+            if res.get("matchup") and gameday:
+                res["matchup"] = {**res["matchup"], "gameday": gameday}
+            out[name] = assess(res, stat_category, float(r["Line"]), weekly, default_season(), cached_game_info, cached_forecast)
+        except Exception as e:
+            out[name] = f"error: {str(e)[:60]}"
+    if progress is not None:
+        progress.progress(1.0, text="Scan complete")
     return out
 
 
-TAG_COL = "Six-Point"
-NICKNAMES: Dict[str, str] = {
-    "ARI": "cardinals", "ATL": "falcons", "BAL": "ravens", "BUF": "bills", "CAR": "panthers", "CHI": "bears",
-    "CIN": "bengals", "CLE": "browns", "DAL": "cowboys", "DEN": "broncos", "DET": "lions", "GB": "packers",
-    "HOU": "texans", "IND": "colts", "JAX": "jaguars", "KC": "chiefs", "LA": "rams", "LAC": "chargers",
-    "LV": "raiders", "MIA": "dolphins", "MIN": "vikings", "NE": "patriots", "NO": "saints", "NYG": "giants",
-    "NYJ": "jets", "PHI": "eagles", "PIT": "steelers", "SEA": "seahawks", "SF": "49ers", "TB": "buccaneers",
-    "TEN": "titans", "WAS": "commanders",
-}
+def render_live_panel() -> None:
+    ss = st.session_state
+    api_key = _secret("ODDS_API_KEY")
+    with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
+        if not api_key:
+            st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
+            return
+        live_stat = st.selectbox("Select Prop Market", list(MARKETS["NFL"].keys()), key="live_stat")
+        if st.button("Step 1: Load Upcoming Games", key="load_games"):
+            try:
+                events, _ = list_events("NFL", api_key)
+                ss["events"] = events
+            except OddsApiError as exc:
+                st.error(str(exc))
+        events = ss.get("events")
+        if events is not None and not events.empty:
+            game_idx = st.selectbox("Step 2: Select Game", range(len(events)), format_func=lambda i: str(events.loc[i, "label"]), key="live_game")
+            if st.button(f"Step 3: Fetch {live_stat} Odds", key="fetch_board"):
+                try:
+                    board, _ = fetch_prop_board("NFL", str(events.loc[game_idx, "id"]), live_stat, ("draftkings",), api_key)
+                    ss["board"], ss["board_scan"], ss["board_token"] = board, None, uuid.uuid4().hex
+                    ss["board_game_label"] = str(events.loc[game_idx, "label"])
+                except OddsApiError as exc:
+                    st.error(str(exc))
+        board = ss.get("board")
+        if board is not None and not board.empty:
+            summary = summarize_board(board)
+            shown = summary
+            scan = ss.get("board_scan")
+            if scan is not None and scan["token"] == ss.get("board_token"):
+                shown = add_six_point_column(summary, scan["six"])
+            st.dataframe(style_tags(shown) if "Six-Point" in shown else shown, use_container_width=True)
+            st.caption("🔥 SHARP = 6/6 criteria · ⚡ LEAN = 5/6 · other rows show their score · a dash shows why a player wasn't scored. "
+                       "Each prop is scored on its best side by EV.")
+            if "Six-Point" in shown:
+                tags = shown["Six-Point"].astype(str)
+                scored = int((~tags.str.startswith("—")).sum())
+                st.caption(f"Last scan: {int(tags.str.startswith('🔥').sum())} SHARP · {int(tags.str.startswith('⚡').sum())} LEAN · "
+                           f"{scored} of {len(tags)} props scored.")
+            if st.button("🔎 Scan board for 5/6 & 6/6 props", key="scan_board_btn"):
+                bar = st.progress(0.0, text="Starting scan...")
+                ss["board_scan"] = {"token": ss.get("board_token"), "six": scan_board(summary, live_stat, ss.get("board_game_label", ""), bar)}
+                st.rerun()
+            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", shown["Player"].tolist(), key="pick_player")
+            offers = player_offers(board, player_pick)
+            if not offers.empty:
+                row = offers.iloc[0]
+                if st.button(f"⚡ Populate {player_pick} ({row['Line']} | Over {row['Over']} / Under {row['Under']})", key="populate_btn"):
+                    sync_populate_to_widgets(live_stat, player_pick, row["Line"], row["Over"], row["Under"])
+                    st.rerun()
 
 
-def game_matches(label: str, team: Optional[str], opponent: Optional[str]) -> bool:
-    nicks = [NICKNAMES.get(canon(t)) for t in (team, opponent)]
-    return all(nicks) and all(n in str(label).lower() for n in nicks)
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
+    return fetch_game_info(team, opponent, gameday)
 
 
-def teams_in_label(label: str) -> List[str]:
-    low = str(label).lower()
-    return [code for code, nick in NICKNAMES.items() if nick in low]
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_forecast(lat: float, lon: float) -> Dict[str, Any]:
+    return fetch_forecast(lat, lon)
 
 
-def opponent_from_label(label: str, team: Optional[str]) -> Optional[str]:
-    teams = teams_in_label(label)
-    t = canon(team)
-    return next((c for c in teams if c != t), None) if len(teams) == 2 and t in teams else None
+@st.cache_data(ttl=21600, show_spinner=False)
+def cached_roster(team: str) -> Dict[str, Any]:
+    return fetch_roster(team)
 
 
-def label_gameday(label: str) -> Optional[str]:
-    m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*UTC", str(label))
-    if not m:
+def _player_photo(res: Dict[str, Any]) -> Optional[str]:
+    if not res.get("team"):
+        return live_game.headshot_url(res["player_name"])
+    try:
+        return player_photo(res["player_name"], res["team"], res.get("pos"), cached_roster)
+    except Exception:
         return None
-    return pd.Timestamp(f"{m[1]} {m[2]}", tz="UTC").tz_convert("America/New_York").strftime("%Y-%m-%d")
 
 
-def _best(six: Any) -> Optional[Mapping[str, Any]]:
-    return six[six["best"]] if isinstance(six, Mapping) else None
+def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
+    color = {"neutral": "#0369a1", "good": "#15803d", "bad": "#b91c1c"}[tone]
+    col.markdown(
+        f'<div class="metric-box"><div class="metric-label">{label}</div>'
+        f'<div class="metric-value" style="color:{color} !important;">{value}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
-def tag_text(six: Any) -> str:
-    if isinstance(six, str):
-        return f"— {six}"
-    best = _best(six)
-    if best is None:
-        return "—"
-    if best["tier"] == "SHARP":
-        return f"🔥 SHARP {best['score']}/6 · {best['side']}"
-    if best["tier"] == "LEAN":
-        return f"⚡ LEAN {best['score']}/6 · {best['side']}"
-    return f"{best['score']}/6 · {best['side']}"
+def _tone(x: float) -> str:
+    return "good" if x > 0 else "bad"
 
 
-def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Any]) -> pd.DataFrame:
-    out = summary.copy()
-    out[TAG_COL] = out["Player"].map(lambda p: tag_text(six_by_player.get(p)))
-    rank = out["Player"].map(lambda p: (_best(six_by_player.get(p)) or {"score": -1})["score"])
-    return out.assign(_rank=rank).sort_values("_rank", ascending=False, kind="stable").drop(columns="_rank").reset_index(drop=True)
+def render_final_assessment(res: Dict[str, Any]) -> None:
+    six = res.get("six_point")
+    if not six:
+        err = res.get("six_point_error")
+        if err:
+            st.caption(f"⚠️ Six-point assessment unavailable ({err}).")
+        return
+    best = six[six["best"]]
+    other = six["Under" if six["best"] == "Over" else "Over"]
+    tone = {"SHARP": "good", "LEAN": "neutral", "PASS": "bad"}[best["tier"]]
+    st.markdown("### 🏁 Final Assessment: 6-Point Check")
+    a, b, c = st.columns([1, 1, 2])
+    _metric(a, f"TIER · {res['best_side'].upper()}", best["tier"], tone)
+    _metric(b, "CRITERIA MET", f"{best['score']}/6", tone)
+    c.caption(f"6/6 = SHARP · 5/6 = LEAN · 4 or fewer = PASS. Scored for the model's best side ({best['side']}). "
+              f"The {other['side']} would score {other['score']}/6 ({other['tier']}). A check that can't be verified counts as failed.")
+    if best["tier"] != "PASS" and res["ev_pct"] <= 0:
+        st.warning("⚠️ The six-point score is positive but the model's EV at this price is not. Check the price before betting.")
+    for ck in best["checks"]:
+        icon = "✅" if ck["passed"] else ("⚪" if not ck["verified"] else "❌")
+        st.markdown(f"{icon} **{ck['label']}**: {ck['detail']}")
+    st.caption(f"Defensive ranks use what each defense allows this position group (season-long, and its last {RECENT_GAMES} games). "
+               f"Spread comes from the ESPN scoreboard (blowout = {BLOWOUT_SPREAD:g}+); weather is the Open-Meteo forecast for kickoff at outdoor stadiums. "
+               "Thresholds live at the top of nfl_six_point.py.")
 
 
-def style_tags(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    def row_style(row: pd.Series) -> List[str]:
-        tag = str(row.get(TAG_COL, ""))
-        css = ("background-color:#166534;color:#ffffff;font-weight:700" if tag.startswith("🔥")
-               else "background-color:#a16207;color:#ffffff;font-weight:700" if tag.startswith("⚡") else "")
-        return [css] * len(row)
+def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
+    m = res.get("matchup")
+    st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
+    if not m:
+        st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
+        return
+    venue = "" if m["home"] is None else ("vs " if m["home"] else "@ ")
+    wk = f" · Wk {m['week']}" if m.get("week") else ""
+    c = st.columns(5)
+    _metric(c[0], "OPPONENT", f"{venue}{m['opponent']}{wk}")
+    _metric(c[1], f"RANK VS {m['pos']} (1 = SOFTEST)", f"#{m['rank']} of {m['n_teams']}", "good" if m["rank"] <= 10 else "bad" if m["rank"] >= m["n_teams"] - 9 else "neutral")
+    _metric(c[2], f"{stat_category.upper()} ALLOWED / GM", f"{m['allowed']:.1f}")
+    _metric(c[3], "LEAGUE AVG / INDEX", f"{m['league']:.1f} · {m['index']:.2f}x")
+    _metric(c[4], "MATCHUP ADJ", f"x{m['mult']:.3f}", "good" if m["mult"] > 1.0005 else "bad" if m["mult"] < 0.9995 else "neutral")
+    src = "backtested" if m["calibrated"] else "default assumption; calibrate in the Matchup Backtest tab"
+    notes = [f"Allowed to {m['pos']}s per game, shrunk toward last season ({m['games']} games this season). Weight k = {m['k']:.2f} ({src})."]
+    if m.get("rest") is not None and m.get("opp_rest") is not None:
+        flag = lambda d: " (short week)" if d <= 6 else " (post-bye)" if d >= 13 else ""
+        notes.append(f"Rest days: you {m['rest']}{flag(m['rest'])}, opponent {m['opp_rest']}{flag(m['opp_rest'])}. Informational only; no adjustment.")
+    for n in notes:
+        st.caption(n)
+    with st.expander(f"All 32 defenses vs {m['pos']} ({stat_category})"):
+        board = m["board"].rename(columns={"EST": "ALLOWED (SHRUNK)", "CUR": "THIS SEASON"}).round(2)
+        st.dataframe(board, use_container_width=True, hide_index=True)
 
-    return df.style.apply(row_style, axis=1)
+
+def _scoreboard_body() -> None:
+    rows = live_game.scoreboard()
+    if not rows:
+        st.caption("Live scoreboard unavailable right now.")
+        return
+    focus = live_game.canon((st.session_state.get("last_res") or {}).get("team", ""))
+    for i in range(0, len(rows), 4):
+        cols = st.columns(4)
+        for col, r in zip(cols, rows[i:i + 4]):
+            star = "⭐ " if focus in (r["away"], r["home"]) else ""
+            live = r["state"] == "in"
+            score = f"{r['away']} {r['away_score']} – {r['home_score']} {r['home']}" if r["state"] != "pre" else f"{r['away']} @ {r['home']}"
+            _metric(col, f"{star}{'🔴 LIVE · ' if live else ''}{r['detail']}", score, "good" if live else "neutral")
+    st.caption("Auto-refreshes every 20 seconds while any game is live.")
+
+
+def render_live_scoreboard() -> None:
+    any_live = any(r["state"] == "in" for r in live_game.scoreboard())
+    with st.expander("📺 Live NFL Scoreboard", expanded=True):
+        if hasattr(st, "fragment"):
+            st.fragment(run_every=20 if any_live else None)(_scoreboard_body)()
+        else:
+            _scoreboard_body()
+
+
+def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
+    ctx = st.session_state.get("last_ctx", {})
+    st.markdown("### 🏈 Live Game Script")
+    spec = live_game.spec_for(stat_category)
+    if spec is None:
+        st.caption("No live game-script model for this stat (combos, INTs and longest-play props are skipped).")
+        return
+    game = live_game.find_game(res["team"])
+    if game is None:
+        st.caption(f"No {res['team']} game found on the current ESPN NFL scoreboard.")
+        return
+    if game.state == "pre":
+        st.caption(f"Pregame ({game.detail}). The live adjustment switches on at kickoff.")
+        return
+    if st.button("🔄 Refresh live score", key="live_refresh"):
+        live_game.refresh()
+        st.rerun()
+    st.markdown(
+        f'<div style="text-align:center;font-size:2.4rem;font-weight:800;color:#0f172a;">'
+        f'{game.team} {game.team_score} – {game.opp_score} {game.opp}</div>'
+        f'<div style="text-align:center;font-weight:700;color:#0369a1;margin-bottom:12px;">🔴 {game.detail}</div>',
+        unsafe_allow_html=True,
+    )
+    spread = st.number_input(
+        f"Pregame spread for {game.team} (negative = favorite, 0 = ignore)", value=0.0, step=0.5, key="live_spread",
+        help="Removes the script the market already expected, so only the deviation from it moves the projection.",
+    )
+    auto = live_game.fetch_player_stat(game.event_id, res["player_name"], spec)
+    if auto is None:
+        st.caption("No box-score entry found yet; assuming 0 so far. Edit below if that is wrong.")
+    current = st.number_input(
+        f"{stat_category} so far (auto-filled from the box score; edit to override)", value=float(auto or 0.0),
+        step=1.0, key=f"live_cur_{res['player_name']}_{stat_category}_{auto}",
+    )
+    out = live_game.evaluate_live(res["mu"], spec, game, float(spread), float(current), float(ctx["line"]),
+                                  float(ctx["over"]), float(ctx["under"]))
+    word = "Trailing" if out["lean"] < -0.05 else "Leading" if out["lean"] > 0.05 else "Even"
+    flow = "pass-heavy" if out["lean"] < -0.05 else "run-heavy" if out["lean"] > 0.05 else "neutral"
+    c = st.columns(6)
+    _metric(c[0], f"{game.team} vs {game.opp}", f"{game.team_score}-{game.opp_score} · {game.detail}")
+    _metric(c[1], "GAME SCRIPT", f"{word} · {flow}", "good" if out["lean"] > 0.05 else "bad" if out["lean"] < -0.05 else "neutral")
+    _metric(c[2], "SO FAR", f"{current:.1f}")
+    _metric(c[3], "LIVE FINAL PROJ", f"{out['final_proj']:.1f}", _tone(out["final_proj"] - ctx["line"]))
+    _metric(c[4], "LIVE VERDICT" if out["verdict"] == "PLAY" else "LIVE LEAN (PASS)", f"{out['side']} {ctx['line']}", _tone(out["ev_pct"]))
+    _metric(c[5], "LIVE EV / EDGE", f"{out['ev_pct']:+.1f}% / {out['edge_pp']:+.1f}pp", _tone(out["ev_pct"]))
+    d = st.columns(4)
+    _metric(d[0], "P(OVER) / P(UNDER)", f"{out['p_over'] * 100:.1f}% / {out['p_under'] * 100:.1f}%")
+    _metric(d[1], "REMAINING PROJ", f"{out['mu_rem']:.1f}")
+    _metric(d[2], "PACE MULT (REST OF GAME)", f"x{out['mult']:.3f}", _tone(out["mult"] - 1))
+    _metric(d[3], "LIVE KELLY (¼)", f"{out['kelly_pct']:.1f}% BR")
+    st.caption(
+        f"Game-script sensitivities are default assumptions (beta = {spec.beta:+.2f} on remaining volume). "
+        "Compare against a fresh live line: a stale pregame price will overstate the edge."
+    )
+
+
+def render_contextual_reality_check() -> None:
+    with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
+        st.markdown("Before locking in your bet, pass the model output through these real-world filters:")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.checkbox("1. Secure Volume & Usage", value=True, help="Does the player command high snap/touch/shot volume?")
+        with col2:
+            st.checkbox("2. Clean Schedule Spot", value=True, help="No unmanaged fatigue, rest disadvantages, or blowout risk.")
+        with col3:
+            st.checkbox("3. Sharp Line Movement", value=True, help="Line movement supports the side or aligns with sharp money.")
+        st.caption("💡 *Note: High-volume players insulate you from single-game variance, while back-to-backs lean toward Unders due to tired legs.*")
+
+
+def render_injury_usage(res: Dict[str, Any]) -> None:
+    inj = res.get("inj")
+    if not inj:
+        return
+    st.markdown("### 🩺 Injuries & Usage")
+    grp = inj.get("group")
+    share_lbl = {"rec": "TARGET SHARE", "rush": "CARRY SHARE"}.get(grp)
+    c = st.columns(4)
+    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Passing game")
+    _metric(c[1], "USAGE ADJ", f"x{inj['mult']:.3f}", "good" if inj["mult"] > 1.0005 else "bad" if inj["mult"] < 0.9995 else "neutral")
+    um = float(res.get("usage_mult", inj["mult"])) or 1.0
+    _metric(c[2], "PROJ BEFORE USAGE", f"{res['mu'] / um:.2f}")
+    _metric(c[3], "PROJ AFTER USAGE", f"{res['mu']:.2f}", "good" if um > 1.0005 else "bad" if um < 0.9995 else "neutral")
+    if inj.get("listed"):
+        st.caption("🩺 Injury report for " + str(res.get("team", "this team")) + ": " + " · ".join(f"{x['name']} ({x['status']})" for x in inj["listed"]))
+    elif inj.get("feed_ok", True):
+        st.caption("🩺 The injury feed lists no relevant teammates for this team.")
+    if inj["table"]:
+        st.dataframe(pd.DataFrame(inj["table"]), use_container_width=True, hide_index=True)
+        st.caption("Weight = P(misses) minus the share of his recent games already missed (no double counting; a returning teammate pulls usage back down). "
+                   "Absorption rates are assumptions; scale them in the injury settings.")
+    else:
+        st.caption("No injured or returning teammates move this projection. Add names in the injury settings if the feed is stale.")
+    st.caption("The projection, simulation, edge, EV and verdict above already include this usage adjustment.")
+
+
+def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
+    t = res.get("tiers")
+    if not t:
+        return
+    st.markdown("### 🎯 Player vs Defense Tiers")
+    fmt = lambda x: "n/a" if x["avg"] is None else f"{x['avg']:.1f} ({x['n']} g)"
+    c = st.columns(5)
+    for col, lab, key in zip(c, ["ALL GAMES", "VS 5 SOFTEST", "VS 10 SOFTEST", "VS 10 TOUGHEST", "VS 5 TOUGHEST"], ["overall", "soft5", "soft10", "tough10", "tough5"]):
+        _metric(col, lab, fmt(t[key]))
+    st.caption(f"Each defense is ranked per season by what it allowed {res.get('pos', 'this position')}s in {stat_category} (1 = softest). Small samples: context, not an adjustment.")
+
+
+def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
+    photo_col, title_col = st.columns([1, 6])
+    photo = _player_photo(res)
+    if photo:
+        photo_col.image(photo, width=120)
+    title_col.markdown(f"## {res['player_name']} | {stat_category}")
+    title_col.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
+    c = st.columns(6)
+    _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
+    _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
+    _metric(c[2], "BEST SIDE (BY EV)", res["best_side"], _tone(res["ev_pct"]))
+    fair_odds_disp = f"{int(round(res['fair_odds'])):+d}" if isinstance(res.get("fair_odds"), (int, float)) else str(res.get("fair_odds", ""))
+    _metric(c[3], "FAIR ODDS", fair_odds_disp)
+    _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
+    _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
+    st.markdown("---")
+    render_final_assessment(res)
+    st.markdown("---")
+    render_matchup(res, stat_category)
+    render_injury_usage(res)
+    render_tiers(res, stat_category)
+    render_live_script(res, stat_category)
+    st.markdown("### 📈 Hit Rate & Sizing")
+    h = st.columns(5)
+    _metric(h[0], "OVER HIT L5 / L10", f"{res['hit5']}/{res['n5']} · {res['hit10']}/{res['n10']}")
+    _metric(h[1], "RAW L10 AVG / MEDIAN", f"{res['raw_avg']:.1f} / {res['median']:.1f}")
+    _metric(h[2], "MODEL vs MARKET", f"{res['p_model']:.1f}% / {res['p_market']:.1f}%")
+    _metric(h[3], "KELLY SIZING (¼)", f"{res['kelly_pct']:.1f}% BR")
+    _metric(h[4], "SIM MEAN", f"{res['mean']:.2f}")
+    for w in res["warnings"]:
+        st.caption(f"⚠️ {w}")
+    st.markdown("---")
+    
+    render_contextual_reality_check()
+    
+    st.markdown("### 📊 Game Log Performance")
+    st.caption("Last 10 games (faded bars = last season). Dashed blue = line, dotted orange = model projection.")
+    gl = pd.DataFrame(res["gamelog_details"])
+    if gl.empty:
+        return
+    colors = np.where(gl["stat_value"] > line_val, "#22c55e", np.where(gl["stat_value"] < line_val, "#ef4444", "#94a3b8"))
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=gl["x_label"], y=gl["stat_value"], marker_color=colors, marker_opacity=np.where(gl["season"] == "current", 1.0, 0.5),
+        text=[f"{v:.1f}" if v % 1 else f"{int(v)}" for v in gl["stat_value"]],
+        textposition="outside", textfont=dict(color="#0f172a", size=12, family="sans-serif"),
+    ))
+    fig.add_shape(type="line", x0=-0.5, x1=len(gl) - 0.5, y0=line_val, y1=line_val, line=dict(color="#2563eb", width=2, dash="dash"))
+    fig.add_shape(type="line", x0=-0.5, x1=len(gl) - 0.5, y0=res["mu"], y1=res["mu"], line=dict(color="#f97316", width=2, dash="dot"))
+    fig.update_layout(
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font=dict(color="#0f172a"), height=380,
+        margin=dict(l=20, r=20, t=30, b=40), showlegend=False,
+        xaxis=dict(showgrid=False, tickfont=dict(color="#0f172a")),
+        yaxis=dict(showgrid=True, gridcolor="#e2e8f0", tickfont=dict(color="#0f172a")),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_matchup_backtest() -> None:
+    ss = st.session_state
+    st.markdown(
+        "Estimates **k** in `stat ÷ player's season average = 1 + k × (opponent index − 1)`, with the opponent index built "
+        "only from games played *before* each matchup (no look-ahead), clustered by player. k = 0.35 means a defense "
+        "allowing 10% more than average lifts a projection 3.5%. Results are shrunk toward the default before use."
+    )
+    c1, c2 = st.columns(2)
+    n_seasons = c1.slider("Seasons to backtest", 1, 4, 3)
+    c2.write("")
+    if c2.button("🔬 Run matchup backtest", key="run_mbt"):
+        cur = default_season()
+        with st.spinner("Loading nflverse seasons and running the backtest…"):
+            try:
+                first = cur - n_seasons + 1
+                weekly = load_weekly(cur, back=n_seasons)
+                ss["mbt_table"] = run_backtests(weekly, first)
+            except Exception as e:
+                ss["mbt_table"] = None
+                st.error(f"Backtest failed: {e}")
+    table = ss.get("mbt_table")
+    if table is not None and not table.empty:
+        st.dataframe(table.round(3), use_container_width=True, hide_index=True)
+        st.caption("K_HAT is the raw estimate, K_EFF is what the model will use. SIGNIFICANT = |K_HAT| ≥ 2 × SE. "
+                   "Stats where it's 'no' are still dominated by noise; K_EFF stays close to the default.")
+        a, b = st.columns(2)
+        if a.button("✅ Apply to model", key="apply_mbt"):
+            ss["matchup_k"] = {r.STAT: float(r.K_EFF) for r in table.itertuples()}
+            save_k_file(ss["matchup_k"])
+            st.toast("Calibrated matchup weights applied")
+        if b.button("↩️ Reset to defaults", key="reset_mbt"):
+            ss["matchup_k"] = None
+            save_k_file(None)
+            st.toast("Back to default weights")
+    elif table is not None:
+        st.warning("Not enough player-games for any stat. Try more seasons.")
+    active = ss.get("matchup_k")
+    st.markdown("**Active matchup weights**" + (" (backtested)" if active else " (default assumptions)"))
+    st.dataframe(pd.DataFrame({"STAT": list(DEFAULT_K), "k": [round((active or DEFAULT_K).get(s, DEFAULT_K[s]), 3) for s in DEFAULT_K]}),
+                 use_container_width=True, hide_index=True)
+    if active:
+        st.caption("To make these permanent, paste into DEFAULT_K in nfl_matchups.py:")
+        st.code("DEFAULT_K = " + json.dumps({k: round(v, 3) for k, v in active.items()}, indent=4), language="python")
+
+
+def main() -> None:
+    st.markdown(
+        """
+        <div class="vision-header" style="padding: 20px;">
+            <div class="vision-title">⚡ NFL Prop Evaluator</div>
+            <div class="vision-sub">Quantitative Monte Carlo Player Prop Analytics Platform</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    ss = st.session_state
+    def_player, def_line = DEFAULTS
+    if "matchup_k" not in ss:
+        ss["matchup_k"] = load_k_file()
+    for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
+                         ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
+                         ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
+        ss.setdefault(key, default)
+
+    tab_eval, tab_bt = st.tabs(["⚡ Evaluate", "🔬 Matchup Backtest"])
+    with tab_eval:
+        render_live_scoreboard()
+        render_live_panel()
+        with st.expander("🩺 Injuries & usage settings", expanded=False):
+            st.checkbox("Adjust for injured / returning teammates (target and carry share redistribution)", key="adj_inj")
+            st.slider("Absorption strength (scales how much of an absent player's share teammates pick up)", 0.5, 1.0, key="adj_absorb", step=0.05)
+            st.text_input("Teammates OUT (comma-separated; adds to the ESPN feed)", key="adj_out")
+            st.text_input("Teammates QUESTIONABLE (counted as 50%)", key="adj_q")
+            st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
+            st.caption("Applies when you press Evaluate. Check the team's report close to kickoff: the feed can lag.")
+        with st.form("evaluation_form"):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            player_name = c1.text_input("Player Name", key="input_player")
+            stat_category = c2.selectbox("Stat Category", stat_options(), key="input_stat")
+            line_val = c3.number_input("Line", step=0.5, key="input_line")
+            c4, c5, c6, c7 = st.columns(4)
+            over_odds = c4.number_input("Over Odds", key="input_over")
+            under_odds = c5.number_input("Under Odds", key="input_under")
+            opp_choice = c6.selectbox("Opponent", [AUTO_OPP, "None"] + NFL_TEAMS, key="input_opp")
+            proj_source = c7.selectbox("Projection Model", SOURCES, key="input_source")
+            submitted = st.form_submit_button("⚡ Evaluate Prop")
+
+        if submitted or ss.pop("pending_eval", False):
+            opponent = "AUTO" if opp_choice == AUTO_OPP else None if opp_choice == "None" else opp_choice
+            res = evaluate_prop(player_name=player_name, stat_category=stat_category, line=line_val, over_odds=over_odds,
+                                under_odds=under_odds, projection_source=proj_source, season=default_season(), opponent=opponent,
+                                matchup_k=ss.get("matchup_k"),
+                                adj_cfg=_adj_cfg())
+            if "error" not in res:
+                try:
+                    weekly = load_weekly(default_season(), 1)
+                except Exception:
+                    weekly = None
+                try:
+                    game_label = ss.get("board_game_label", "")
+                    gameday = label_gameday(game_label)
+                    if res.get("matchup") and gameday:
+                        res["matchup"] = {**res["matchup"], "gameday": gameday}
+                    res["six_point"] = assess(res, stat_category, float(line_val), weekly, default_season(), cached_game_info, cached_forecast)
+                except Exception as e:
+                    res["six_point_error"] = str(e)
+            ss["last_res"] = res
+            ss["last_ctx"] = {"stat": stat_category, "line": float(line_val), "over": float(over_odds), "under": float(under_odds)}
+        res = ss.get("last_res")
+        if res:
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                render_results(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
+
+        with st.expander("ℹ️ How the model works"):
+            st.markdown(
+                "- **Projection Model**: *Model* = shrunk EWMA × matchup; *My mean* / *My median* = raw mean / median of the last 10 games × matchup.\n"
+                "- **Projection** = (EWMA of this season's last 8 games blended with last season's average, ~4 pseudo-games of prior weight) × matchup multiplier.\n"
+                "- **Matchup** = what the opponent allows per game to your player's position group (QB/RB/WR/TE) for this exact stat, "
+                "shrunk toward last season, ranked 1-32 (1 = allows the most). Multiplier = 1 + k × (index − 1), clipped to ±15%.\n"
+                "- **Distribution**: Gamma for yardage, Normal for completions/attempts/carries, Negative Binomial (Poisson if under-dispersed) for TDs, receptions, INTs. 50,000 seeded draws.\n"
+                "- **Market**: two-way multiplicative devig. Edge = model % − devigged market %. EV uses the model probability at the offered price (pushes refunded).\n"
+                "- **Final assessment (6-point check)**: baby line, AI edge, implied chance, defensive rank (season + last 4 games), injury flags, game script (spread under 10, no bad weather). "
+                "6/6 = SHARP, 5/6 = LEAN; checks that can't be verified count as failed. Thresholds are in nfl_six_point.py.\n"
+                "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0.\n"
+                "- **Injuries & usage**: injured teammates' target share (receiving) or carry share (rushing) is redistributed to the others in proportion to their own share "
+                "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect, so a returning teammate pulls usage back down. "
+                "Passing props lose a little efficiency when top targets are out, and receivers lose a little when the QB is out. The projection is shifted and the verdict re-priced; absorption rates are assumptions."
+            )
+    with tab_bt:
+        render_matchup_backtest()
+
+
+if __name__ == "__main__":
+    main()
