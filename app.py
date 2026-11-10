@@ -38,7 +38,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Pure White Main Background */
     .stApp {
         background-color: #ffffff !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -48,7 +47,6 @@ st.markdown(
         display: none !important;
     }
 
-    /* Powder Blue Container Boxes, Cards & Expanders */
     .vision-card, 
     [data-testid="stVerticalBlockBorderWrapper"], 
     [data-testid="stExpander"], 
@@ -60,7 +58,6 @@ st.markdown(
     }
     .vision-card { padding: 20px !important; margin-bottom: 20px !important; }
 
-    /* Fix Expander Header Title Text */
     [data-testid="stExpander"] summary, 
     [data-testid="stExpander"] summary * {
         color: #0f172a !important;
@@ -68,7 +65,6 @@ st.markdown(
         font-size: 16px !important;
     }
 
-    /* Header Text Styling */
     .vision-title {
         color: #0369a1 !important;
         font-size: 26px;
@@ -83,7 +79,6 @@ st.markdown(
         margin-top: 4px;
     }
 
-    /* Powder Blue Metric Boxes */
     [data-testid="stMetric"], .metric-box {
         background: #b9e6ff !important;
         border: 2px solid #7dd3fc !important;
@@ -109,13 +104,11 @@ st.markdown(
         font-weight: 900 !important;
     }
 
-    /* Text & Label Overrides */
     label, p, span, div[data-testid="stMarkdownContainer"] p {
         color: #0f172a !important;
         font-weight: 700 !important;
     }
 
-    /* Input Fields & Dropdowns */
     .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
         background-color: #0f172a !important;
         color: #ffffff !important;
@@ -128,7 +121,6 @@ st.markdown(
         color: #ffffff !important;
     }
 
-    /* Action Buttons */
     .stButton>button, [data-testid="stFormSubmitButton"]>button {
         background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
         color: #ffffff !important;
@@ -144,7 +136,6 @@ st.markdown(
         font-weight: 900 !important;
     }
 
-    /* Data Table Styling */
     [data-testid="stDataFrame"] {
         background-color: #ffffff !important;
         border: 2px solid #7dd3fc !important;
@@ -160,7 +151,6 @@ K_PATH = "matchup_k.json"
 
 
 def _secret(name: str) -> str:
-    """Read a secret from Streamlit secrets, falling back to environment variables."""
     try:
         if name in st.secrets:
             return str(st.secrets[name]).strip()
@@ -170,7 +160,6 @@ def _secret(name: str) -> str:
 
 
 def _to_american(x: float) -> int:
-    """Coerce a price to American odds (decimal odds such as 1.91 are converted instead of truncated to 1 or 2)."""
     x = float(x)
     if abs(x) >= 100:
         return int(round(x))
@@ -180,7 +169,6 @@ def _to_american(x: float) -> int:
 
 
 def load_k_file() -> Optional[Dict[str, float]]:
-    """Saved calibrated matchup weights (best effort; ephemeral on Streamlit Cloud)."""
     try:
         if os.path.exists(K_PATH):
             with open(K_PATH) as fh:
@@ -191,7 +179,6 @@ def load_k_file() -> Optional[Dict[str, float]]:
 
 
 def save_k_file(k: Optional[Dict[str, float]]) -> None:
-    """Persist (or clear) the calibrated weights."""
     try:
         if k is None:
             if os.path.exists(K_PATH):
@@ -204,7 +191,6 @@ def save_k_file(k: Optional[Dict[str, float]]) -> None:
 
 
 def sync_populate_to_widgets(stat_category: str, player: str, line: float, over: float, under: float) -> None:
-    """Directly update form widget state keys so inputs immediately reflect populated data."""
     ss = st.session_state
     ss["input_player"], ss["input_stat"], ss["input_line"] = player, stat_category, float(line)
     ss["input_over"], ss["input_under"] = _to_american(over), _to_american(under)
@@ -213,7 +199,6 @@ def sync_populate_to_widgets(stat_category: str, player: str, line: float, over:
 
 
 def _adj_cfg() -> Dict[str, Any]:
-    """Injury settings from the 🩺 expander (shared by Evaluate and the board scan)."""
     ss = st.session_state
     split = lambda key: [x.strip() for x in str(ss[key]).split(",") if x.strip()]
     return {"injuries": ss["adj_inj"], "absorb_scale": float(ss["adj_absorb"]),
@@ -221,12 +206,6 @@ def _adj_cfg() -> Dict[str, Any]:
 
 
 def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
-    """Evaluate every player on the odds board; map each to his six-point result or to the reason he wasn't scored.
-
-    A player is evaluated against his next scheduled opponent (Auto). If that isn't the game selected in Step 2
-    (for example on game day, when the schedule has already moved on) he is re-evaluated against the other team in
-    the selected game. Players who aren't on either team in that game are skipped.
-    """
     ss = st.session_state
     out: Dict[str, Any] = {}
     try:
@@ -237,9 +216,18 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
     n = len(summary)
 
     def run(name: str, r: pd.Series, opponent: str) -> Dict[str, Any]:
-        return evaluate_prop(player_name=name, stat_category=stat_category, line=float(r["Line"]), over_odds=float(r["Over"]),
-                             under_odds=float(r["Under"]), projection_source=ss.get("input_source", SOURCES[0]),
-                             season=default_season(), opponent=opponent, matchup_k=ss.get("matchup_k"), adj_cfg=_adj_cfg())
+        return evaluate_prop(
+            player_name=name,
+            stat_category=stat_category,
+            line=float(r["Line"]),
+            over_odds=_to_american(r["Over"]),
+            under_odds=_to_american(r["Under"]),
+            projection_source=ss.get("input_source", SOURCES[0]),
+            season=default_season(),
+            opponent=opponent,
+            matchup_k=ss.get("matchup_k"),
+            adj_cfg=_adj_cfg(),
+        )
 
     for k, (_, r) in enumerate(summary.iterrows()):
         name = str(r["Player"])
@@ -273,7 +261,6 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
 
 
 def render_live_panel() -> None:
-    """Odds API loader (unchanged flow): games -> board -> populate the form."""
     ss = st.session_state
     api_key = _secret("ODDS_API_KEY")
     with st.expander("📡 Fetch Live DraftKings Lines (The Odds API)", expanded=True):
@@ -327,24 +314,20 @@ def render_live_panel() -> None:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
-    """ESPN spread / kickoff / venue for the game (cached 5 minutes)."""
     return fetch_game_info(team, opponent, gameday)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_forecast(lat: float, lon: float) -> Dict[str, Any]:
-    """Open-Meteo hourly forecast for a stadium (cached 30 minutes)."""
     return fetch_forecast(lat, lon)
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def cached_roster(team: str) -> Dict[str, Any]:
-    """ESPN team roster (cached 6 hours) for team-aware headshots."""
     return fetch_roster(team)
 
 
 def _player_photo(res: Dict[str, Any]) -> Optional[str]:
-    """Headshot of the evaluated player on HIS team (a name-only search shows the wrong 'Josh Allen')."""
     if not res.get("team"):
         return live_game.headshot_url(res["player_name"])
     try:
@@ -354,7 +337,6 @@ def _player_photo(res: Dict[str, Any]) -> Optional[str]:
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
-    """Render one metric card; tone in {'neutral','good','bad'}."""
     color = {"neutral": "#0369a1", "good": "#15803d", "bad": "#b91c1c"}[tone]
     col.markdown(
         f'<div class="metric-box"><div class="metric-label">{label}</div>'
@@ -364,12 +346,10 @@ def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
 
 
 def _tone(x: float) -> str:
-    """Metric tone from sign."""
     return "good" if x > 0 else "bad"
 
 
 def render_final_assessment(res: Dict[str, Any]) -> None:
-    """Final assessment: the six-point criteria for the recommended side (6/6 SHARP, 5/6 LEAN)."""
     six = res.get("six_point")
     if not six:
         err = res.get("six_point_error")
@@ -396,7 +376,6 @@ def render_final_assessment(res: Dict[str, Any]) -> None:
 
 
 def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
-    """Real opponent-vs-position panel (replaces the old hash-generated placeholders)."""
     m = res.get("matchup")
     st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
     if not m:
@@ -423,7 +402,6 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
 
 
 def _scoreboard_body() -> None:
-    """Grid of score cards for every NFL game; green = live; star = the evaluated player's game."""
     rows = live_game.scoreboard()
     if not rows:
         st.caption("Live scoreboard unavailable right now.")
@@ -440,7 +418,6 @@ def _scoreboard_body() -> None:
 
 
 def render_live_scoreboard() -> None:
-    """Scoreboard expander; self-refreshing fragment when a game is live (needs Streamlit >= 1.37)."""
     any_live = any(r["state"] == "in" for r in live_game.scoreboard())
     with st.expander("📺 Live NFL Scoreboard", expanded=True):
         if hasattr(st, "fragment"):
@@ -450,7 +427,6 @@ def render_live_scoreboard() -> None:
 
 
 def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
-    """Live score + clock + box score -> game-script-adjusted verdict (pregame: shows status only)."""
     ctx = st.session_state.get("last_ctx", {})
     st.markdown("### 🏈 Live Game Script")
     spec = live_game.spec_for(stat_category)
@@ -507,12 +483,8 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
 
 
 def render_contextual_reality_check() -> None:
-    """Render a pre-flight contextual checklist to manually verify usage, schedule, and line movement."""
     with st.expander("🔍 Step 3: Contextual Reality Check (Pre-Flight Filter)", expanded=False):
-        st.markdown(
-            "Before locking in your bet, pass the model output through these real-world filters:"
-        )
-        
+        st.markdown("Before locking in your bet, pass the model output through these real-world filters:")
         col1, col2, col3 = st.columns(3)
         with col1:
             st.checkbox("1. Secure Volume & Usage", value=True, help="Does the player command high snap/touch/shot volume?")
@@ -520,12 +492,10 @@ def render_contextual_reality_check() -> None:
             st.checkbox("2. Clean Schedule Spot", value=True, help="No unmanaged fatigue, rest disadvantages, or blowout risk.")
         with col3:
             st.checkbox("3. Sharp Line Movement", value=True, help="Line movement supports the side or aligns with sharp money.")
-            
         st.caption("💡 *Note: High-volume players insulate you from single-game variance, while back-to-backs lean toward Unders due to tired legs.*")
 
 
 def render_injury_usage(res: Dict[str, Any]) -> None:
-    """Injury / opportunity-redistribution panel (teammates out -> target or carry share moves)."""
     inj = res.get("inj")
     if not inj:
         return
@@ -552,7 +522,6 @@ def render_injury_usage(res: Dict[str, Any]) -> None:
 
 
 def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
-    """Player's average vs the softest / toughest defenses for this stat (context only)."""
     t = res.get("tiers")
     if not t:
         return
@@ -565,7 +534,6 @@ def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
 
 
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
-    """Metric cards, matchup panel, notes, and the game-log chart."""
     photo_col, title_col = st.columns([1, 6])
     photo = _player_photo(res)
     if photo:
@@ -576,7 +544,8 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
     _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
     _metric(c[2], "BEST SIDE (BY EV)", res["best_side"], _tone(res["ev_pct"]))
-    _metric(c[3], "FAIR ODDS", f"{res['fair_odds']:+d}")
+    fair_odds_disp = f"{int(round(res['fair_odds'])):+d}" if isinstance(res.get("fair_odds"), (int, float)) else str(res.get("fair_odds", ""))
+    _metric(c[3], "FAIR ODDS", fair_odds_disp)
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
     st.markdown("---")
@@ -597,7 +566,6 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
         st.caption(f"⚠️ {w}")
     st.markdown("---")
     
-    # Contextual Reality Check Card
     render_contextual_reality_check()
     
     st.markdown("### 📊 Game Log Performance")
@@ -624,7 +592,6 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
 
 
 def render_matchup_backtest() -> None:
-    """Calibrate how much weight the opponent index deserves, using only information available before each game."""
     ss = st.session_state
     st.markdown(
         "Estimates **k** in `stat ÷ player's season average = 1 + k × (opponent index − 1)`, with the opponent index built "
@@ -670,7 +637,6 @@ def render_matchup_backtest() -> None:
 
 
 def main() -> None:
-    """Streamlit entry point."""
     st.markdown(
         """
         <div class="vision-header" style="padding: 20px;">
@@ -724,6 +690,10 @@ def main() -> None:
                 except Exception:
                     weekly = None
                 try:
+                    game_label = ss.get("board_game_label", "")
+                    gameday = label_gameday(game_label)
+                    if res.get("matchup") and gameday:
+                        res["matchup"] = {**res["matchup"], "gameday": gameday}
                     res["six_point"] = assess(res, stat_category, float(line_val), weekly, default_season(), cached_game_info, cached_forecast)
                 except Exception as e:
                     res["six_point_error"] = str(e)
