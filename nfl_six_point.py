@@ -29,7 +29,7 @@ MIN_LINE: Dict[str, float] = {
     # --- Kicker & Touchdown Additions ---
     "KICKING POINTS": 6.5, "KICK POINTS": 6.5,
     "FIELD GOALS": 1.5, "FIELD GOALS MADE": 1.5,
-    "EXTRA POINTS": 2.5, "EXTRA POINTS MADE": 2.5,
+    "EXTRA POINTS": 1.5, "EXTRA POINTS MADE": 1.5,
     "TOUCHDOWNS": 0.5, "ANYTIME TD": 0.5, "OFFENSIVE TDS": 0.5,
 }
 
