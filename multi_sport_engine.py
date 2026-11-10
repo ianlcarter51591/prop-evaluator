@@ -1,10 +1,4 @@
-"""NFL Monte Carlo Prop Engine & Dual-Directional 6-Point Assessment System.
-
-Integrates EWMA baseline projections, distribution simulations (Gamma, Normal, NegBin),
-two-way devigging, Kelly sizing, injury/matchup adjustments, game script/weather checks,
-and dynamic Dual-Directional 6-Point criteria evaluation for both Over and Under bets.
-"""
-
+"""NFL Monte Carlo Prop Engine & Dual-Directional 6-Point Assessment System."""
 from __future__ import annotations
 
 import re
@@ -17,9 +11,9 @@ import requests
 
 from nfl_adjust import injury_layer, tier_splits
 from nfl_matchups import DEFAULT_K, _defense_games, matchup_multiplier, matchup_table, run_backtests
-from sports_data import ABBR_CANON, clean_name, clean_series, current_nfl_season, fetch_nfl_player_logs, load_schedule, load_weekly, next_game
+from sports_data import clean_name, clean_series, current_nfl_season, fetch_nfl_player_logs, load_schedule, load_weekly, next_game
 
-# --- Configuration & Thresholds -----------------------------------------------
+# --- Configuration & Thresholds ---
 DEFAULTS: Tuple[str, float] = ("Patrick Mahomes", 265.5)
 SOURCES: Tuple[str, ...] = ("Model (EWMA mean)", "My mean", "My median")
 DEVIG_METHODS: Tuple[str, ...] = ("Multiplicative",)
@@ -30,10 +24,10 @@ STATS: List[str] = [
     "Kicking Points", "Field Goals Made", "Anytime Touchdown Scorer",
 ]
 
-WINDOW = 8             # Recent current-season games feeding EWMA
-DECAY = 0.85           # EWMA decay per game of age
-N_PRIOR = 4.0          # Pseudo-games of last-season weight
-N_CV_PRIOR = 4.0       # Pseudo-games weight on stat's default spread
+WINDOW = 8
+DECAY = 0.85
+N_PRIOR = 4.0
+N_CV_PRIOR = 4.0
 N_SIMS = 50_000
 KELLY_FRACTION, KELLY_CAP = 0.25, 0.05
 
@@ -64,8 +58,8 @@ MIN_EDGE_ABS: Dict[str, float] = {
 
 MIN_EDGE_PCT = 0.06
 IMPLIED_MIN = 0.50
-RANK_CUTOFF = 16            # Half of 32-team league
-RECENT_GAMES = 4            # Recent defense filter window
+RANK_CUTOFF = 16
+RECENT_GAMES = 4
 RECENT_MIN_GAMES = 2
 BLOWOUT_SPREAD = 10.0
 WIND_MPH, GUST_MPH, PRECIP_MM, SNOW_CM, COLD_F = 15.0, 25.0, 3.0, 0.5, 20.0
@@ -74,6 +68,10 @@ SHARP_SCORE, LEAN_SCORE = 6, 5
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+
+ABBR_CANON: Dict[str, str] = {
+    "WSH": "WAS", "LAR": "LA", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LA"
+}
 
 STADIUMS: Dict[str, Tuple[float, float, str]] = {
     "ARI": (33.5276, -112.2626, "retractable"), "ATL": (33.7554, -84.4010, "dome"),
@@ -105,7 +103,6 @@ NICKNAMES: Dict[str, str] = {
 }
 
 
-# --- Dataclasses ---
 @dataclass
 class Projection:
     mu: float
@@ -157,7 +154,6 @@ class Weather:
     detail: str
 
 
-# --- Core Helper Functions ---
 def stat_options() -> List[str]:
     return STATS
 
@@ -167,7 +163,6 @@ def default_season() -> int:
 
 
 def canon_stat(stat: str) -> str:
-    """Canonicalize stat category to standard nflverse/threshold keys."""
     s = str(stat or "").upper().strip().replace("_", " ")
     s = re.sub(r"^PLAYER\s+", "", s)
     if "KICK" in s and ("POINT" in s or "PTS" in s): return "KICKING POINTS"
@@ -187,12 +182,10 @@ def canon_stat(stat: str) -> str:
 
 
 def canon(abbr: Any) -> str:
-    """Upper-case team code mapped to the nflverse convention."""
     a = str(abbr or "").upper().strip()
     return ABBR_CANON.get(a, a)
 
 
-# --- Projection & Simulation Engine ---
 def ewma_weights(n: int, decay: float = DECAY) -> np.ndarray:
     w = decay ** np.arange(n)[::-1]
     return w / w.sum()
@@ -237,7 +230,6 @@ def simulate(mu: float, sigma: float, family: str, n_sims: int = N_SIMS, seed: i
     return np.maximum(np.rint(rng.normal(loc=mu, scale=sigma, size=n_sims)), 0.0)
 
 
-# --- Devigging & Kelly ---
 def implied_prob(odds: float) -> float:
     o = float(odds)
     return -o / (-o + 100.0) if o < 0 else 100.0 / (o + 100.0)
@@ -264,7 +256,6 @@ def kelly_fraction(p_win: float, p_lose: float, odds: float) -> float:
     return float(np.clip((b * p_win - p_lose) / max(b, 1e-5) * KELLY_FRACTION, 0.0, KELLY_CAP))
 
 
-# --- Dynamic Dual-Directional 6-Point Assessment ---
 def tier_for_side(side: str, score: int) -> str:
     if score >= SHARP_SCORE:
         return f"SHARP {side.upper()}"
@@ -364,7 +355,6 @@ def score_prop_side(side: str, stat: str, line: float, proj: float, p_market: fl
     return SixPointResult(side=side, score=score, tier=tier_for_side(side, score), checks=checks)
 
 
-# --- Weather & Game Info Scrapers ---
 def recent_defense_rank(weekly: pd.DataFrame, stat: str, pos: str, season: int, opponent: str,
                         n_recent: int = RECENT_GAMES, min_games: int = RECENT_MIN_GAMES
                         ) -> Tuple[Optional[int], Optional[int]]:
@@ -497,7 +487,6 @@ def assess(res: Mapping[str, Any], stat_category: str, line: float, weekly: Opti
     return out
 
 
-# --- Matchup Resolver ---
 def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optional[str], weekly: pd.DataFrame,
                     k_map: Optional[Dict[str, float]]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not opponent or str(opponent).upper() == "NONE":
@@ -530,7 +519,6 @@ def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optio
     }, note
 
 
-# --- Main Prop Evaluator Function ---
 def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: float, under_odds: float,
                   projection_source: str = "Model (EWMA mean)", season: int = 2026, opponent: Optional[str] = None,
                   matchup_k: Optional[Dict[str, float]] = None, adj_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -632,7 +620,6 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
         return {"error": f"Evaluation error: {e}"}
 
 
-# --- UI Formatting & Dataframe Helpers ---
 def game_matches(label: str, team: Optional[str], opponent: Optional[str]) -> bool:
     nicks = [NICKNAMES.get(canon(t)) for t in (team, opponent)]
     return all(nicks) and all(n in str(label).lower() for n in nicks)
@@ -644,3 +631,47 @@ def teams_in_label(label: str) -> List[str]:
 
 
 def opponent_from_label(label: str, team: Optional[str]) -> Optional[str]:
+    teams = teams_in_label(label)
+    t = canon(team)
+    return next((c for c in teams if c != t), None) if len(teams) == 2 and t in teams else None
+
+
+def label_gameday(label: str) -> Optional[str]:
+    m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*UTC", str(label))
+    if not m:
+        return None
+    return pd.Timestamp(f"{m[1]} {m[2]}", tz="UTC").tz_convert("America/New_York").strftime("%Y-%m-%d")
+
+
+def _best(six: Any) -> Optional[Mapping[str, Any]]:
+    return six[six["best"]] if isinstance(six, Mapping) and "best" in six else None
+
+
+def tag_text(six: Any) -> str:
+    if isinstance(six, str):
+        return f"— {six}"
+    best = _best(six)
+    if best is None:
+        return "—"
+    if "SHARP" in best["tier"]:
+        return f"🔥 {best['tier']} {best['score']}/6"
+    if "LEAN" in best["tier"]:
+        return f"⚡ {best['tier']} {best['score']}/6"
+    return f"{best['score']}/6 · {best['side']}"
+
+
+def add_six_point_column(summary: pd.DataFrame, six_by_player: Mapping[str, Any]) -> pd.DataFrame:
+    out = summary.copy()
+    out[TAG_COL] = out["Player"].map(lambda p: tag_text(six_by_player.get(p)))
+    rank = out["Player"].map(lambda p: (_best(six_by_player.get(p)) or {"score": -1})["score"])
+    return out.assign(_rank=rank).sort_values("_rank", ascending=False, kind="stable").drop(columns="_rank").reset_index(drop=True)
+
+
+def style_tags(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    def row_style(row: pd.Series) -> List[str]:
+        tag = str(row.get(TAG_COL, ""))
+        css = ("background-color:#166534;color:#ffffff;font-weight:700" if tag.startswith("🔥")
+               else "background-color:#a16207;color:#ffffff;font-weight:700" if tag.startswith("⚡") else "")
+        return [css] * len(row)
+
+    return df.style.apply(row_style, axis=1)
