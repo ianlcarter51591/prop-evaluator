@@ -34,7 +34,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# High-Contrast Powder Blue UI Styling
 st.markdown(
     """
     <style>
@@ -172,11 +171,14 @@ def _secret(name: str) -> str:
 
 def _to_american(x: float) -> int:
     """Coerce decimal or text odds to valid American integer odds."""
-    x = float(x)
-    if abs(x) >= 100:
-        return int(round(x))
-    if x > 1.0:
-        return int(round((x - 1.0) * 100.0)) if x >= 2.0 else int(round(-100.0 / (x - 1.0)))
+    try:
+        x = float(x)
+        if abs(x) >= 100:
+            return int(round(x))
+        if x > 1.0:
+            return int(round((x - 1.0) * 100.0)) if x >= 2.0 else int(round(-100.0 / (x - 1.0)))
+    except Exception:
+        pass
     return -110
 
 
@@ -243,7 +245,7 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
 
     for k, (_, r) in enumerate(summary.iterrows()):
         name = str(r["Player"])
-        if r[["Line", "Over", "Under"]].isna().any():
+        if pd.isna(r["Line"]) or pd.isna(r["Over"]):
             out[name] = "incomplete odds"
             continue
         if progress is not None:
@@ -345,7 +347,7 @@ def _player_photo(res: Dict[str, Any]) -> Optional[str]:
     try:
         return player_photo(res["player_name"], res["team"], res.get("pos"), cached_roster)
     except Exception:
-        return None
+        None
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
@@ -557,7 +559,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
     _metric(c[2], "BEST SIDE (BY EV)", res["best_side"], _tone(res["ev_pct"]))
     fair_odds_val = res.get("fair_odds")
-    fair_odds_disp = f"{int(round(fair_odds_val)):+d}" if isinstance(fair_odds_val, (int, float)) else str(fair_odds_val or "")
+    fair_odds_disp = f"{int(round(fair_odds_val)):+d}" if isinstance(fair_odds_val, (int, float)) and pd.notna(fair_odds_val) else str(fair_odds_val or "")
     _metric(c[3], "FAIR ODDS", fair_odds_disp)
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
