@@ -26,7 +26,6 @@ STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "RUSHING YARDS": ("rush", 0.85, 0.0), "RUSH YARDS": ("rush", 0.85, 0.0),
     "RECEPTIONS": ("rec", 0.95, 0.05),
     "RECEIVING YARDS": ("rec", 0.85, 0.08), "REC YARDS": ("rec", 0.85, 0.08),
-    # --- Kicker & Touchdown Additions ---
     "KICKING POINTS": ("kick", 0.00, 0.0),
     "FIELD GOALS": ("kick", 0.00, 0.0),
     "EXTRA POINTS": ("kick", 0.00, 0.0),
