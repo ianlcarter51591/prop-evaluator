@@ -15,6 +15,7 @@ SPORT_KEYS: Dict[str, str] = {
     "NBA": "basketball_nba",
 }
 
+# Only include official, active market keys supported by The Odds API
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -28,7 +29,6 @@ MARKETS: Dict[str, Dict[str, str]] = {
         "Receptions": "player_receptions",
         "Kicking Points": "player_kicking_points",
         "Field Goals Made": "player_field_goals",
-        "Extra Points Made": "player_extra_points",
         "Anytime Touchdown Scorer": "player_anytime_td",
     }
 }
@@ -80,7 +80,7 @@ def fetch_prop_board(
     sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
-        raise OddsApiError(f"Market label '{market_label}' not recognized for {sport}.")
+        raise OddsApiError(f"Market label '{market_label}' is not supported for live API fetching.")
 
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events/{event_id}/odds"
