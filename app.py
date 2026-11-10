@@ -635,29 +635,4 @@ def main() -> None:
                                 adj_cfg=_adj_cfg())
             if "error" not in res:
                 try:
-                    weekly = load_weekly(default_season(), 1)
-                except Exception:
-                    weekly = None
-                try:
-                    game_label = ss.get("board_game_label", "")
-                    gameday = label_gameday(game_label)
-                    if res.get("matchup") and gameday:
-                        res["matchup"] = {**res["matchup"], "gameday": gameday}
-                    res["six_point"] = assess(res, stat_category, float(line_val), weekly, default_season(), cached_game_info, cached_forecast)
-                except Exception as e:
-                    res["six_point_error"] = str(e)
-            ss["last_res"] = res
-            ss["last_ctx"] = {"stat": stat_category, "line": float(line_val), "over": float(over_odds), "under": float(under_odds)}
-        res = ss.get("last_res")
-        if res:
-            if "error" in res:
-                st.error(res["error"])
-            else:
-                render_results(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
-
-    with tab_bt:
-        render_matchup_backtest()
-
-
-if __name__ == "__main__":
-    main()
+                    weekly =
