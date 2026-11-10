@@ -8,7 +8,6 @@ import requests
 import streamlit as st
 
 from nfl_matchups import _defense_games
-from multi_sport_engine import canon_stat
 from sports_data import clean_name, clean_series
 
 INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
@@ -25,6 +24,7 @@ STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "RUSHING YARDS": ("rush", 0.85, 0.0), "RUSH YARDS": ("rush", 0.85, 0.0),
     "RECEPTIONS": ("rec", 0.95, 0.05),
     "RECEIVING YARDS": ("rec", 0.85, 0.08), "REC YARDS": ("rec", 0.85, 0.08),
+    "KICKING POINTS": ("pass", 0.00, 0.0), "FIELD GOALS": ("pass", 0.00, 0.0), "TOUCHDOWNS": ("rush", 0.80, 0.0),
 }
 INJ_COLS = ["NAME", "STATUS", "P_OUT"]
 
@@ -89,6 +89,7 @@ def presence(win: pd.DataFrame, pids: List[str], gkeys: List[int]) -> np.ndarray
 
 
 def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.DataFrame, season: int, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    from multi_sport_engine import canon_stat
     out: Dict[str, Any] = {"mult": 1.0, "table": [], "listed": [], "notes": [], "feed_ok": True, "share": None, "group": None,
                            "checked": False, "self_status": "", "qb_flag": ""}
     spec = STAT_MAP.get(stat) or STAT_MAP.get(canon_stat(stat))
@@ -156,7 +157,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     if not feed_ok:
         inferred = (streak >= 3) & ~listed
         q = np.where(inferred, 0.75, q)
-        out["notes"].append("Injury feed unavailable: teammates missing last 3+ games counted 75% out.")
+        out["notes"].append("Injury feed unavailable: teammates who missed last 3+ games counted 75% likely out.")
     f = f_core * n / (n + N_PRIOR)
     i = pids.index(pid) if pid in pids else -1
     if i >= 0 and q[i] > 0:
@@ -203,7 +204,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["checked"] = True
     show = np.flatnonzero((np.abs(net) > 0.02) & (np.abs(eff) > 1e-4))
     for j in show[np.argsort(-np.abs(eff[show]))]:
-        label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: returning"
+        label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: treated as returning"
         out["table"].append({"Teammate": pool.iloc[j]["NAME"], "Pos": pool.iloc[j]["POS"], "Status": label,
                              "Share %": round(float(S[j]) * 100, 1), "Recent games missed": f"{f_core[j]:.0%}",
                              "Weight": round(float(net[j]), 2), "Stat effect %": round(float(eff[j]) * 100, 1)})
@@ -211,6 +212,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
 
 
 def tier_splits(weekly: pd.DataFrame, pid: str, pos: str, stat: str) -> Optional[Dict[str, Any]]:
+    from multi_sport_engine import canon_stat
     c_stat = canon_stat(stat)
     g = _defense_games(weekly, c_stat, pos)
     allowed = g.groupby(["SEASON", "OPP"])["V"].mean()
@@ -219,4 +221,15 @@ def tier_splits(weekly: pd.DataFrame, pid: str, pos: str, stat: str) -> Optional
     mine = weekly[weekly["PID"] == pid].copy()
     if mine.empty:
         return None
-    mine["
+    mine["RANK"] = rank.reindex(pd.MultiIndex.from_arrays([mine["SEASON"], mine["OPP"]])).to_numpy()
+    mine["NT"] = n_teams.reindex(mine["SEASON"]).to_numpy()
+    mine = mine.dropna(subset=["RANK"])
+    if mine.empty:
+        return None
+
+    def tier(mask: pd.Series) -> Dict[str, Any]:
+        v = mine.loc[mask, c_stat] if c_stat in mine.columns else mine.loc[mask, stat]
+        return {"avg": float(v.mean()) if len(v) else None, "n": int(len(v))}
+
+    return {"overall": tier(mine["RANK"] > 0), "soft5": tier(mine["RANK"] <= 5), "soft10": tier(mine["RANK"] <= 10),
+            "tough10": tier(mine["RANK"] > mine["NT"] - 10), "tough5": tier(mine["RANK"] > mine["NT"] - 5)}
