@@ -9,13 +9,11 @@ import requests
 
 API_BASE = "https://api.the-odds-api.com/v4/sports"
 
-# Official Odds API sport key mappings
 SPORT_KEYS: Dict[str, str] = {
     "NFL": "americanfootball_nfl",
     "NBA": "basketball_nba",
 }
 
-# Supported live markets (12 active prop markets)
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -40,13 +38,11 @@ class OddsApiError(Exception):
 
 
 def _resolve_sport_key(sport: str) -> str:
-    """Resolve display sport name to official Odds API sport key."""
     s = str(sport or "").upper().strip()
     return SPORT_KEYS.get(s, s.lower())
 
 
 def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, int]:
-    """Fetch upcoming games/events for a given sport key."""
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events"
     params = {"apiKey": api_key}
@@ -76,11 +72,10 @@ def fetch_prop_board(
     bookmakers: Tuple[str, ...],
     api_key: str
 ) -> Tuple[pd.DataFrame, int]:
-    """Fetch specific player prop board for a given event and market."""
     sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
-        raise OddsApiError(f"Market label '{market_label}' is not supported for live fetching.")
+        raise OddsApiError(f"Market label '{market_label}' is not supported for live API fetching.")
 
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events/{event_id}/odds"
@@ -114,7 +109,7 @@ def fetch_prop_board(
 
 
 def _synthetic_under(over_odds: float) -> float:
-    """Generate fair opposite Under odds for single-sided markets like Anytime Touchdowns."""
+    """Generate fair synthetic opposite Under odds if the sportsbook only lists Over."""
     try:
         o = float(over_odds)
         p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
@@ -156,6 +151,5 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
 
 
 def player_offers(board: pd.DataFrame, player_name: str) -> pd.DataFrame:
-    """Filter board summary down to a single selected player."""
     summary = summarize_board(board)
     return summary[summary["Player"] == player_name]
