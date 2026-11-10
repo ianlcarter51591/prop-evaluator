@@ -1,4 +1,4 @@
-"""NFL injury / opportunity redistribution and defense-tier splits (called natively by multi_sport_engine.evaluate_prop)."""
+"""NFL injury / opportunity redistribution and defense-tier splits."""
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -28,7 +28,6 @@ STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "RECEIVING YARDS": ("rec", 0.85, 0.08), "REC YARDS": ("rec", 0.85, 0.08),
     "KICKING POINTS": ("kick", 0.00, 0.0),
     "FIELD GOALS": ("kick", 0.00, 0.0),
-    "EXTRA POINTS": ("kick", 0.00, 0.0),
     "TOUCHDOWNS": ("rec", 0.70, 0.05),
 }
 INJ_COLS = ["NAME", "STATUS", "P_OUT"]
@@ -163,7 +162,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     if not feed_ok:
         inferred = (streak >= 3) & ~listed
         q = np.where(inferred, 0.75, q)
-        out["notes"].append("Injury feed unavailable: teammates who missed the last 3+ games are counted 75% likely out. Add names in the injury settings to override.")
+        out["notes"].append("Injury feed unavailable: teammates who missed the last 3+ games are counted 75% likely out.")
     f = f_core * n / (n + N_PRIOR)
     i = pids.index(pid) if pid in pids else -1
     if i >= 0 and q[i] > 0:
