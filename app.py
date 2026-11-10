@@ -24,6 +24,7 @@ if _STARTUP_PROBLEMS:
 
 from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
 from nfl_matchups import DEFAULT_K, run_backtests
+import odds_credits
 from six_point_core import LEGEND, assessment_summary
 from nfl_six_point import (
     BLOWOUT_SPREAD, RECENT_GAMES, add_six_point_column, game_matches, label_gameday, opponent_from_label, style_tags,
@@ -300,20 +301,36 @@ def render_live_panel() -> None:
         live_stat = st.selectbox("Select Prop Market", list(MARKETS["NFL"].keys()), key="live_stat")
         if st.button("Step 1: Load Upcoming Games", key="load_games"):
             try:
-                events, _ = list_events("NFL", api_key)
+                events, remaining = list_events("NFL", api_key)
+                odds_credits.record(remaining)
                 ss["events"] = events
             except OddsApiError as exc:
-                st.error(str(exc))
+                st.error(odds_credits.friendly_error(exc))
         events = ss.get("events")
         if events is not None and not events.empty:
             game_idx = st.selectbox("Step 2: Select Game", range(len(events)), format_func=lambda i: str(events.loc[i, "label"]), key="live_game")
+            refresh = st.checkbox("Refresh odds (costs credits; otherwise a board fetched in the last 10 min is reused for free)",
+                                  key="refresh_odds")
             if st.button(f"Step 3: Fetch {live_stat} Odds", key="fetch_board"):
+                ev_id = str(events.loc[game_idx, "id"])
+
+                def fresh() -> Any:
+                    board_, remaining_ = fetch_prop_board("NFL", ev_id, live_stat, ("draftkings",), api_key)
+                    odds_credits.record(remaining_)
+                    return board_, remaining_
+
                 try:
-                    board, _ = fetch_prop_board("NFL", str(events.loc[game_idx, "id"]), live_stat, ("draftkings",), api_key)
+                    (board, _), cached_age = odds_credits.fetch_cached(("NFL", ev_id, live_stat), fresh, lambda v: not v[0].empty, refresh)
+                    st.caption(odds_credits.cache_note(cached_age))
                     ss["board"], ss["board_scan"], ss["board_token"] = board, None, uuid.uuid4().hex
                     ss["board_game_label"] = str(events.loc[game_idx, "label"])
                 except OddsApiError as exc:
-                    st.error(str(exc))
+                    st.error(odds_credits.friendly_error(exc))
+        _credit_text, _credit_level = odds_credits.credits_status()
+        if _credit_level in ("low", "out"):
+            st.warning(_credit_text)
+        elif _credit_text:
+            st.caption(_credit_text)
         board = ss.get("board")
         if board is not None and not board.empty:
             summary = summarize_board(board)
