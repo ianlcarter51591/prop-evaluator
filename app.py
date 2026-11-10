@@ -24,6 +24,7 @@ if _STARTUP_PROBLEMS:
 
 from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
 from nfl_matchups import DEFAULT_K, run_backtests
+from six_point_core import LEGEND, assessment_summary
 from nfl_six_point import (
     BLOWOUT_SPREAD, RECENT_GAMES, add_six_point_column, game_matches, label_gameday, opponent_from_label, style_tags,
 )
@@ -321,8 +322,7 @@ def render_live_panel() -> None:
             if scan is not None and scan["token"] == ss.get("board_token"):
                 shown = add_six_point_column(summary, scan["six"])
             st.dataframe(style_tags(shown) if "Six-Point" in shown else shown, use_container_width=True)
-            st.caption("🔥 SHARP = 6/6 criteria · ⚡ LEAN = 5/6 · other rows show their score · a dash shows why a player wasn't scored. "
-                       "Each prop is scored on its best side by EV.")
+            st.caption(LEGEND)
             if "Six-Point" in shown:
                 tags = shown["Six-Point"].astype(str)
                 scored = int((~tags.str.startswith("—")).sum())
@@ -373,27 +373,26 @@ def _tone(x: float) -> str:
 
 
 def render_final_assessment(res: Dict[str, Any]) -> None:
-    """Final assessment: six-point criteria for the better-scoring side (6/6 SHARP, 5/6 LEAN)."""
-    six = res.get("six_point")
-    if not six:
-        err = res.get("six_point_error")
+    """Final assessment: six-point criteria for the better-scoring side (6/6 SHARP, 5/6 LEAN). Same result the odds table tags."""
+    err = res.get("six_point_error")
+    info = assessment_summary(res)
+    if info is None:
         if err:
             st.caption(f"⚠️ Six-point assessment unavailable ({err}).")
         return
-    best = six[six["best"]]
-    other = six["Under" if six["best"] == "Over" else "Over"]
+    best, other = info["best"], info["other"]
     tone = {"SHARP": "good", "LEAN": "neutral", "PASS": "bad"}[best["tier"]]
     st.markdown("### 🏁 Final Assessment: 6-Point Check")
     a, b, c = st.columns([1, 1, 2])
     _metric(a, f"TIER · {best['side'].upper()}", best["tier"], tone)
-    _metric(b, "CRITERIA MET", f"{best['score']}/6", tone)
-    c.caption(f"6/6 = SHARP · 5/6 = LEAN · 4 or fewer = PASS. Shown for the better-scoring side ({best['side']}). "
-              f"The {other['side']} scores {other['score']}/6 ({other['tier']}). A check that can't be verified counts as failed.")
-    if six["best"] != six.get("ev_side", six["best"]):
-        st.info(f"The model's highest-EV side is {six['ev_side']}, but {best['side']} meets more of the six criteria.")
-    side_ev = (res.get("sides") or {}).get(best["side"], {}).get("ev_pct", res["ev_pct"])
-    if best["tier"] != "PASS" and side_ev <= 0:
-        st.warning(f"⚠️ {best['side']} meets the criteria but the model's EV at this price is {side_ev:+.1f}%. Check the price before betting.")
+    _metric(b, f"CRITERIA FOR {best['side'].upper()}", f"{best['score']}/6", tone)
+    c.caption(f"**{best['score']}/6 criteria support the {best['side']}** (6/6 = SHARP · 5/6 = LEAN · 4 or fewer = PASS). "
+              f"The {other['side']} meets {other['score']}/6 ({other['tier']}). A check that can't be verified counts as failed.")
+    if info["side_differs"]:
+        st.info(f"The model's highest-EV side is {info['ev_side']}, but {best['side']} meets more of the six criteria.")
+    if best["tier"] != "PASS" and info["side_ev_pct"] <= 0:
+        st.warning(f"⚠️ {best['side']} meets the criteria but the model's EV at this price is {info['side_ev_pct']:+.1f}%. "
+                   "Check the price before betting.")
     for ck in best["checks"]:
         icon = "✅" if ck["passed"] else ("⚪" if not ck["verified"] else "❌")
         st.markdown(f"{icon} **{ck['label']}**: {ck['detail']}")
