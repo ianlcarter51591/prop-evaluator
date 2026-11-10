@@ -149,15 +149,23 @@ AUTO_OPP = "Auto (next game)"
 K_PATH = "matchup_k.json"
 
 
-def get_stat_options() -> list[str]:
-    """Retrieve full list of active prop market names."""
+def get_live_stat_options() -> list[str]:
+    """Retrieve full list of active, supported live API prop markets."""
     if "NFL" in MARKETS:
         return list(MARKETS["NFL"].keys())
     return [
         "Passing Yards", "Pass Completions", "Pass Attempts", "Passing TDs", "Interceptions",
         "Rushing Yards", "Rushing Attempts", "Receiving Yards", "Receptions",
-        "Kicking Points", "Field Goals Made", "Extra Points Made", "Anytime Touchdown Scorer"
+        "Kicking Points", "Field Goals Made", "Anytime Touchdown Scorer"
     ]
+
+
+def get_all_stat_options() -> list[str]:
+    """Retrieve all supported stat options for manual evaluation."""
+    opts = get_live_stat_options()
+    if "Extra Points Made" not in opts:
+        opts.append("Extra Points Made")
+    return opts
 
 
 def _secret(name: str) -> str:
@@ -281,7 +289,7 @@ def render_live_panel() -> None:
         if not api_key:
             st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
             return
-        live_stat = st.selectbox("Select Prop Market", get_stat_options(), key="live_stat")
+        live_stat = st.selectbox("Select Prop Market", get_live_stat_options(), key="live_stat")
         if st.button("Step 1: Load Upcoming Games", key="load_games"):
             try:
                 events, _ = list_events("NFL", api_key)
@@ -347,7 +355,7 @@ def _player_photo(res: Dict[str, Any]) -> Optional[str]:
     try:
         return player_photo(res["player_name"], res["team"], res.get("pos"), cached_roster)
     except Exception:
-        None
+        return None
 
 
 def _metric(col: Any, label: str, value: str, tone: str = "neutral") -> None:
@@ -665,7 +673,7 @@ def main() -> None:
     def_player, def_line = DEFAULTS
     if "matchup_k" not in ss:
         ss["matchup_k"] = load_k_file()
-    for key, default in (("input_player", def_player), ("input_stat", get_stat_options()[0]), ("input_line", float(def_line)),
+    for key, default in (("input_player", def_player), ("input_stat", get_all_stat_options()[0]), ("input_line", float(def_line)),
                          ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
         ss.setdefault(key, default)
@@ -684,7 +692,7 @@ def main() -> None:
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
-            stat_category = c2.selectbox("Stat Category", get_stat_options(), key="input_stat")
+            stat_category = c2.selectbox("Stat Category", get_all_stat_options(), key="input_stat")
             line_val = c3.number_input("Line", step=0.5, key="input_line")
             c4, c5, c6, c7 = st.columns(4)
             over_odds = c4.number_input("Over Odds", key="input_over")
