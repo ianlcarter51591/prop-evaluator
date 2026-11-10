@@ -15,8 +15,9 @@ INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injurie
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 WINDOW_GAMES, RECENT_GAMES, N_PRIOR, DECAY = 17, 8, 4.0, 0.85
 SAME_POS_BOOST, MAX_LIFT, MULT_BOUNDS = 1.5, 1.00, (0.70, 1.55)
-ABSORB: Dict[str, float] = {"rec": 0.90, "rush": 0.85}
-RECEIVERS, RUSHERS = {"WR", "TE", "RB"}, {"RB"}
+ABSORB: Dict[str, float] = {"rec": 0.90, "rush": 0.85, "kick": 0.0}
+RECEIVERS, RUSHERS, KICKERS = {"WR", "TE", "RB"}, {"RB"}, {"K", "PK"}
+
 STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "PASS ATTEMPTS": ("pass", 0.00, 0.0), "PASS COMPLETIONS": ("pass", 0.10, 0.0),
     "PASSING YARDS": ("pass", 0.15, 0.0), "PASS YARDS": ("pass", 0.15, 0.0),
@@ -25,6 +26,11 @@ STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "RUSHING YARDS": ("rush", 0.85, 0.0), "RUSH YARDS": ("rush", 0.85, 0.0),
     "RECEPTIONS": ("rec", 0.95, 0.05),
     "RECEIVING YARDS": ("rec", 0.85, 0.08), "REC YARDS": ("rec", 0.85, 0.08),
+    # --- Kicker & Touchdown Additions ---
+    "KICKING POINTS": ("kick", 0.00, 0.0),
+    "FIELD GOALS": ("kick", 0.00, 0.0),
+    "EXTRA POINTS": ("kick", 0.00, 0.0),
+    "TOUCHDOWNS": ("rec", 0.70, 0.05),
 }
 INJ_COLS = ["NAME", "STATUS", "P_OUT"]
 
@@ -97,9 +103,11 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
         return out
     group, coef, beta = spec
     out["group"] = group
+    if group == "kick":
+        out["notes"].append("Injury adjustment skipped: kicker output depends on team drive efficiency.")
+        out["checked"] = True
+        return out
     share_col = "RUSHING ATTEMPTS" if group == "rush" else ("TARGETS" if "TARGETS" in weekly.columns else "RECEPTIONS")
-    if group != "rush" and share_col != "TARGETS":
-        out["notes"].append("Target counts unavailable (update sports_data.py); using reception share instead.")
     w = weekly.assign(GKEY=weekly["SEASON"].astype(int) * 100 + weekly["WEEK"].astype(int))
     rows = w[w["TEAM"] == team]
     if rows.empty:
