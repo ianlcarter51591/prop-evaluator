@@ -16,7 +16,7 @@ from sports_data import clean_name, load_weekly
 DEFAULTS = ("Patrick Mahomes", 275.5)
 SOURCES = ["Model (EWMA + Matchup)", "My Mean (L10)", "My Median (L10)"]
 
-# Supported Stat Categories and Canonical Definitions
+# Supported Stat Categories (12 Markets)
 STAT_CONFIG: Dict[str, Dict[str, Any]] = {
     "PASSING YARDS": {"col": "passing_yards", "dist": "gamma", "default_pos": "QB"},
     "PASS COMPLETIONS": {"col": "completions", "dist": "norm", "default_pos": "QB"},
@@ -27,21 +27,17 @@ STAT_CONFIG: Dict[str, Dict[str, Any]] = {
     "RUSHING ATTEMPTS": {"col": "carries", "dist": "norm", "default_pos": "RB"},
     "RECEIVING YARDS": {"col": "receiving_yards", "dist": "gamma", "default_pos": "WR"},
     "RECEPTIONS": {"col": "receptions", "dist": "nbinom", "default_pos": "WR"},
-    # --- Kicker & Touchdown Additions ---
     "KICKING POINTS": {"col": "kicking_points", "dist": "gamma", "default_pos": "K"},
     "FIELD GOALS": {"col": "field_goals", "dist": "nbinom", "default_pos": "K"},
-    "EXTRA POINTS": {"col": "extra_points", "dist": "nbinom", "default_pos": "K"},
     "TOUCHDOWNS": {"col": "touchdowns", "dist": "nbinom", "default_pos": "RB"},
 }
 
 
 def default_season() -> int:
-    """Return the primary active NFL season."""
     return 2026
 
 
 def _to_prob(american_odds: float) -> float:
-    """Convert American odds to implied probability."""
     o = float(american_odds)
     if o > 0:
         return 100.0 / (o + 100.0)
@@ -49,7 +45,6 @@ def _to_prob(american_odds: float) -> float:
 
 
 def devig_two_way(over_odds: float, under_odds: float) -> Tuple[float, float]:
-    """Calculate fair two-way devigged probabilities using multiplicative method."""
     p_over_raw = _to_prob(over_odds)
     p_under_raw = _to_prob(under_odds)
     total_implied = p_over_raw + p_under_raw
@@ -57,7 +52,6 @@ def devig_two_way(over_odds: float, under_odds: float) -> Tuple[float, float]:
 
 
 def probability_to_american(p: float) -> int:
-    """Convert probability to fair American odds format."""
     p = float(np.clip(p, 0.001, 0.999))
     if p >= 0.5:
         return int(round(-100.0 * (p / (1.0 - p))))
@@ -65,13 +59,10 @@ def probability_to_american(p: float) -> int:
 
 
 def compute_ewma_baseline(vals: np.ndarray, alpha: float = 0.25, prior_weight: float = 4.0, prior_mean: Optional[float] = None) -> float:
-    """Calculate exponentially weighted moving average with prior blending."""
     if len(vals) == 0:
         return prior_mean if prior_mean is not None else 0.0
-    
     weights = (1.0 - alpha) ** np.arange(len(vals))[::-1]
     ewma_val = float(np.sum(vals * weights) / np.sum(weights))
-    
     if prior_mean is not None and prior_weight > 0:
         total_weight = len(vals) + prior_weight
         return float((ewma_val * len(vals) + prior_mean * prior_weight) / total_weight)
@@ -79,39 +70,29 @@ def compute_ewma_baseline(vals: np.ndarray, alpha: float = 0.25, prior_weight: f
 
 
 def simulate_distribution(mu: float, dist_type: str, n_sims: int = 50000, seed: int = 42) -> np.ndarray:
-    """Generate seeded Monte Carlo simulation draws based on distribution model."""
     rng = np.random.default_rng(seed)
     mu = max(float(mu), 0.01)
-    
     if dist_type == "gamma":
-        # Variance scales with mean (k=2.0 dispersion)
         shape = max(mu / 1.5, 0.5)
         scale = mu / shape
         return rng.gamma(shape=shape, scale=scale, size=n_sims)
-    
     elif dist_type == "norm":
         sd = max(mu * 0.35, 1.0)
         draws = rng.normal(loc=mu, scale=sd, size=n_sims)
         return np.maximum(draws, 0.0)
-    
     elif dist_type == "nbinom":
-        # Overdispersed count process (TDs, FGs, XPs, Receptions)
         r = max(mu * 1.2, 0.5)
         p = r / (r + mu)
         return rng.negative_binomial(n=r, p=p, size=n_sims).astype(float)
-    
     return rng.poisson(lam=mu, size=n_sims).astype(float)
 
 
 def resolve_stat_col(df: pd.DataFrame, stat_canon: str) -> str:
-    """Map canonical stat to available column name in nflverse weekly DataFrame."""
     candidates = []
     if stat_canon == "KICKING POINTS":
         candidates = ["kicking_points", "kick_pts", "pat_made"]
     elif stat_canon == "FIELD GOALS":
         candidates = ["field_goals", "fg_made", "field_goals_made"]
-    elif stat_canon == "EXTRA POINTS":
-        candidates = ["extra_points", "pat_made", "extra_points_made"]
     elif stat_canon == "TOUCHDOWNS":
         candidates = ["touchdowns", "tds", "anytime_td"]
     elif stat_canon == "PASSING YARDS":
@@ -133,12 +114,11 @@ def resolve_stat_col(df: pd.DataFrame, stat_canon: str) -> str:
     elif stat_canon == "RECEPTIONS":
         candidates = ["receptions", "rec"]
 
+    upper_cols = {c.upper(): c for c in df.columns}
     for col in candidates:
-        upper_cols = {c.upper(): c for c in df.columns}
         if col.upper() in upper_cols:
             return upper_cols[col.upper()]
     
-    # Fallback search
     for col in df.columns:
         if stat_canon.split()[0] in col.upper():
             return col
@@ -157,15 +137,12 @@ def evaluate_prop(
     matchup_k: Optional[Dict[str, float]] = None,
     adj_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Execute complete prop evaluation pipeline."""
     c_stat = canon_stat(stat_category)
     config = STAT_CONFIG.get(c_stat)
-    
     if config is None:
         return {"error": f"Unknown stat category '{stat_category}'."}
     
     adj_cfg = adj_cfg or {}
-    
     try:
         weekly = load_weekly(season, back=1)
     except Exception as exc:
@@ -173,9 +150,7 @@ def evaluate_prop(
     
     cn = clean_name(player_name)
     p_df = weekly[weekly["CNAME"] == cn].sort_values(["SEASON", "WEEK"])
-    
     if p_df.empty:
-        # Match by partial string if exact clean name misses
         p_df = weekly[weekly["NAME"].str.lower().str.contains(player_name.lower())].sort_values(["SEASON", "WEEK"])
         if p_df.empty:
             return {"error": f"Player '{player_name}' not found in season data."}
@@ -186,19 +161,6 @@ def evaluate_prop(
     pos = str(p_df.iloc[-1].get("POS", config["default_pos"]))
     
     stat_col = resolve_stat_col(weekly, c_stat)
-    
-    # Construct combined kicker/td stats if absent directly
-    if c_stat == "KICKING POINTS" and stat_col not in p_df.columns:
-        fg_col = resolve_stat_col(weekly, "FIELD GOALS")
-        xp_col = resolve_stat_col(weekly, "EXTRA POINTS")
-        p_df["KICKING_POINTS"] = p_df.get(fg_col, 0) * 3 + p_df.get(xp_col, 0)
-        stat_col = "KICKING_POINTS"
-    elif c_stat == "TOUCHDOWNS" and stat_col not in p_df.columns:
-        r_td = resolve_stat_col(weekly, "RUSHING TDS") if "RUSHING TDS" in weekly.columns else None
-        rec_td = resolve_stat_col(weekly, "RECEIVING TDS") if "RECEIVING TDS" in weekly.columns else None
-        p_df["TOUCHDOWNS"] = (p_df[r_td] if r_td else 0) + (p_df[rec_td] if rec_td else 0)
-        stat_col = "TOUCHDOWNS"
-
     cur_df = p_df[p_df["SEASON"] == season]
     prior_df = p_df[p_df["SEASON"] == season - 1]
     
@@ -208,20 +170,28 @@ def evaluate_prop(
     prior_mean = float(np.mean(prior_vals)) if len(prior_vals) > 0 else None
     base_proj = compute_ewma_baseline(cur_vals, alpha=0.25, prior_weight=4.0, prior_mean=prior_mean)
     
-    # Opponent Matchup Adjustment
+    # Safe Opponent Matchup Adjustment
     m_info = None
     mult = 1.0
-    if opponent and opponent != "None":
-        m_info = matchup_multiplier(weekly, c_stat, pos, season, opponent, matchup_k)
-        mult = m_info.get("mult", 1.0)
+    if opponent and str(opponent).upper() != "NONE":
+        try:
+            m_info = matchup_multiplier(weekly, c_stat, pos, season, str(opponent), matchup_k)
+            if isinstance(m_info, dict) and "mult" in m_info and m_info["mult"] is not None:
+                mult = float(m_info["mult"])
+        except Exception:
+            m_info = None
+            mult = 1.0
     
     # Usage / Injury Redistribution
     inj_info = None
     if adj_cfg.get("injuries", True):
-        inj_info = injury_layer(actual_name, pid, team, c_stat, weekly, season, adj_cfg)
-        mult *= inj_info.get("mult", 1.0)
+        try:
+            inj_info = injury_layer(actual_name, pid, team, c_stat, weekly, season, adj_cfg)
+            if isinstance(inj_info, dict):
+                mult *= float(inj_info.get("mult", 1.0))
+        except Exception:
+            inj_info = None
     
-    # Final adjusted projection mean
     if "Mean" in projection_source and len(cur_vals) >= 3:
         mu = float(np.mean(cur_vals[-10:])) * mult
     elif "Median" in projection_source and len(cur_vals) >= 3:
@@ -229,16 +199,13 @@ def evaluate_prop(
     else:
         mu = base_proj * mult
 
-    # Execute Monte Carlo simulation
     sims = simulate_distribution(mu, config["dist"], n_sims=50000)
     p_over_model = float(np.mean(sims > line)) * 100.0
     p_under_model = float(np.mean(sims < line)) * 100.0
     
-    # Devig market odds
     p_over_mkt, p_under_mkt = devig_two_way(over_odds, under_odds)
     p_over_mkt_pct, p_under_mkt_pct = p_over_mkt * 100.0, p_under_mkt * 100.0
     
-    # Best EV determination
     ev_over = (p_over_model / 100.0) * (_to_prob(over_odds) ** -1 if over_odds > 0 else 1.0 + (100.0 / abs(over_odds))) - 1.0
     ev_under = (p_under_model / 100.0) * (_to_prob(under_odds) ** -1 if under_odds > 0 else 1.0 + (100.0 / abs(under_odds))) - 1.0
     
@@ -252,14 +219,12 @@ def evaluate_prop(
     edge_pp = p_model - p_market
     ev_pct = ev_val * 100.0
     
-    # Kelly fractional sizing (1/4 Kelly, capped at 5% BR)
     b = (_to_prob(over_odds) ** -1 - 1.0) if best_side == "Over" and over_odds > 0 else (100.0 / abs(over_odds))
     p_win = p_model / 100.0
     q_loss = 1.0 - p_win
     full_kelly = max((b * p_win - q_loss) / max(b, 1e-5), 0.0)
     kelly_pct = min(full_kelly * 0.25 * 100.0, 5.0) if ev_pct > 0 else 0.0
 
-    # Game log history for charts
     recent_all = p_df.tail(10)
     gamelog = [
         {
@@ -274,7 +239,10 @@ def evaluate_prop(
     last5 = cur_vals[-5:] if len(cur_vals) >= 5 else cur_vals
     last10 = cur_vals[-10:] if len(cur_vals) >= 10 else cur_vals
 
-    t_splits = tier_splits(weekly, pid, pos, c_stat)
+    try:
+        t_splits = tier_splits(weekly, pid, pos, c_stat)
+    except Exception:
+        t_splits = None
 
     return {
         "player_name": actual_name,
