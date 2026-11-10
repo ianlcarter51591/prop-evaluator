@@ -15,7 +15,7 @@ import pandas as pd
 
 from nfl_matchups import _defense_games
 
-# --- Thresholds (edit freely) -------------------------------------------------
+# --- Thresholds -------------------------------------------------
 MIN_LINE: Dict[str, float] = {
     "PASSING YARDS": 175.5, "PASS YARDS": 175.5,
     "PASS COMPLETIONS": 14.5,
@@ -26,7 +26,13 @@ MIN_LINE: Dict[str, float] = {
     "RECEIVING YARDS": 35.5, "REC YARDS": 35.5,
     "RECEPTIONS": 3.5,
     "INTERCEPTIONS": 0.5, "PASS INTS": 0.5,
+    # --- Kicker & Touchdown Additions ---
+    "KICKING POINTS": 6.5, "KICK POINTS": 6.5,
+    "FIELD GOALS": 1.5, "FIELD GOALS MADE": 1.5,
+    "EXTRA POINTS": 2.5, "EXTRA POINTS MADE": 2.5,
+    "TOUCHDOWNS": 0.5, "ANYTIME TD": 0.5, "OFFENSIVE TDS": 0.5,
 }
+
 MIN_EDGE_ABS: Dict[str, float] = {
     "PASSING YARDS": 12.0, "PASS YARDS": 12.0,
     "PASS COMPLETIONS": 1.5,
@@ -37,7 +43,13 @@ MIN_EDGE_ABS: Dict[str, float] = {
     "RECEIVING YARDS": 6.0, "REC YARDS": 6.0,
     "RECEPTIONS": 0.75,
     "INTERCEPTIONS": 0.15, "PASS INTS": 0.15,
+    # --- Kicker & Touchdown Additions ---
+    "KICKING POINTS": 1.0,
+    "FIELD GOALS": 0.35,
+    "EXTRA POINTS": 0.35,
+    "TOUCHDOWNS": 0.15,
 }
+
 MIN_EDGE_PCT = 0.06
 IMPLIED_MIN = 0.50
 RANK_CUTOFF = 16            # half of a 32-team league
@@ -75,21 +87,24 @@ def canon_stat(stat: str) -> str:
     """Canonicalize stat category to standard nflverse/threshold keys."""
     s = str(stat or "").upper().strip().replace("_", " ")
     s = re.sub(r"^PLAYER\s+", "", s)
+    if "KICK" in s and ("POINT" in s or "PTS" in s): return "KICKING POINTS"
+    if "FIELD" in s or "FG" in s: return "FIELD GOALS"
+    if "EXTRA" in s or "XP" in s or "PAT" in s: return "EXTRA POINTS"
+    if "TOUCHDOWN" in s or "TD" in s:
+        if "PASS" in s: return "PASSING TDS"
+        return "TOUCHDOWNS"
     if "PASS" in s and "YARD" in s: return "PASSING YARDS"
     if "PASS" in s and "COMP" in s: return "PASS COMPLETIONS"
     if "PASS" in s and "ATT" in s: return "PASS ATTEMPTS"
-    if "PASS" in s and "TD" in s: return "PASSING TDS"
     if "PASS" in s and ("INT" in s or "INTERCEPTION" in s): return "INTERCEPTIONS"
     if "RUSH" in s and "YARD" in s: return "RUSHING YARDS"
     if "RUSH" in s and "ATT" in s: return "RUSHING ATTEMPTS"
     if ("REC" in s or "RECEIVING" in s) and "YARD" in s: return "RECEIVING YARDS"
     if "REC" in s or "RECEPTION" in s: return "RECEPTIONS"
-    if "INT" in s: return "INTERCEPTIONS"
     return s
 
 
 def canon(abbr: Any) -> str:
-    """Upper-case team code mapped to the nflverse convention."""
     a = str(abbr or "").upper().strip()
     return ABBR_CANON.get(a, a)
 
