@@ -9,12 +9,13 @@ import requests
 
 API_BASE = "https://api.the-odds-api.com/v4/sports"
 
+# Official Odds API sport key mappings
 SPORT_KEYS: Dict[str, str] = {
     "NFL": "americanfootball_nfl",
     "NBA": "basketball_nba",
 }
 
-# Strictly valid Odds API market keys (Kicker & TD props included)
+# Supported live markets (12 active prop markets)
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -79,7 +80,7 @@ def fetch_prop_board(
     sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
-        raise OddsApiError(f"Market label '{market_label}' is not supported for live API fetching.")
+        raise OddsApiError(f"Market label '{market_label}' is not supported for live fetching.")
 
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events/{event_id}/odds"
@@ -113,7 +114,7 @@ def fetch_prop_board(
 
 
 def _synthetic_under(over_odds: float) -> float:
-    """Generate fair synthetic opposite Under odds if the sportsbook only lists Over."""
+    """Generate fair opposite Under odds for single-sided markets like Anytime Touchdowns."""
     try:
         o = float(over_odds)
         p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
@@ -134,7 +135,7 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
     pivoted = []
     for player, grp in board.groupby("Player"):
         line_series = grp["Line"].dropna()
-        line = line_series.iloc[0] if not line_series.empty else np.nan
+        line = line_series.iloc[0] if not line_series.empty else 0.5
         
         over_odds = grp[grp["Side"].isin(["Over", "Yes"])]["Odds"].values
         under_odds = grp[grp["Side"].isin(["Under", "No"])]["Odds"].values
@@ -142,13 +143,12 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
         over_val = over_odds[0] if len(over_odds) > 0 else np.nan
         under_val = under_odds[0] if len(under_odds) > 0 else np.nan
         
-        # Auto-fill missing Under lines (common for kicker & TD props)
         if pd.notna(over_val) and pd.isna(under_val):
             under_val = _synthetic_under(over_val)
         
         pivoted.append({
             "Player": player,
-            "Line": float(line) if pd.notna(line) else np.nan,
+            "Line": float(line) if pd.notna(line) else 0.5,
             "Over": float(over_val) if pd.notna(over_val) else np.nan,
             "Under": float(under_val) if pd.notna(under_val) else np.nan,
         })
