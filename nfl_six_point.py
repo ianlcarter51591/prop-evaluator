@@ -1,4 +1,9 @@
-"""Six-point prop criteria for the NFL Prop Evaluator."""
+"""Six-point prop criteria for the NFL Prop Evaluator.
+
+Score = number of passed checks for a side:  6/6 -> SHARP,  5/6 -> LEAN,  <= 4/6 -> PASS.
+A check that cannot be verified counts as NOT passed (and is shown as unverified).
+"""
+
 from __future__ import annotations
 
 import re
@@ -10,6 +15,7 @@ import pandas as pd
 
 from nfl_matchups import _defense_games
 
+# --- Thresholds (edit freely) -------------------------------------------------
 MIN_LINE: Dict[str, float] = {
     "PASSING YARDS": 175.5, "PASS YARDS": 175.5,
     "PASS COMPLETIONS": 14.5,
@@ -20,11 +26,7 @@ MIN_LINE: Dict[str, float] = {
     "RECEIVING YARDS": 35.5, "REC YARDS": 35.5,
     "RECEPTIONS": 3.5,
     "INTERCEPTIONS": 0.5, "PASS INTS": 0.5,
-    "KICKING POINTS": 6.5, "KICK POINTS": 6.5,
-    "FIELD GOALS": 1.5, "FIELD GOALS MADE": 1.5,
-    "TOUCHDOWNS": 0.5, "ANYTIME TD": 0.5, "OFFENSIVE TDS": 0.5,
 }
-
 MIN_EDGE_ABS: Dict[str, float] = {
     "PASSING YARDS": 12.0, "PASS YARDS": 12.0,
     "PASS COMPLETIONS": 1.5,
@@ -35,16 +37,12 @@ MIN_EDGE_ABS: Dict[str, float] = {
     "RECEIVING YARDS": 6.0, "REC YARDS": 6.0,
     "RECEPTIONS": 0.75,
     "INTERCEPTIONS": 0.15, "PASS INTS": 0.15,
-    "KICKING POINTS": 1.0,
-    "FIELD GOALS": 0.35,
-    "TOUCHDOWNS": 0.15,
 }
-
 MIN_EDGE_PCT = 0.06
 IMPLIED_MIN = 0.50
-RANK_CUTOFF = 16
-RECENT_GAMES = 4
-RECENT_MIN_GAMES = 2
+RANK_CUTOFF = 16            # half of a 32-team league
+RECENT_GAMES = 4            # "recent" = each defense's last 4 games this season
+RECENT_MIN_GAMES = 2        # fewer than this and the recent rank is unverified
 BLOWOUT_SPREAD = 10.0
 WIND_MPH, GUST_MPH, PRECIP_MM, SNOW_CM, COLD_F = 15.0, 25.0, 3.0, 0.5, 20.0
 WEATHER_HOURS = 3
@@ -74,25 +72,24 @@ STADIUMS: Dict[str, Tuple[float, float, str]] = {
 
 
 def canon_stat(stat: str) -> str:
+    """Canonicalize stat category to standard nflverse/threshold keys."""
     s = str(stat or "").upper().strip().replace("_", " ")
     s = re.sub(r"^PLAYER\s+", "", s)
-    if "KICK" in s and ("POINT" in s or "PTS" in s): return "KICKING POINTS"
-    if "FIELD" in s or "FG" in s: return "FIELD GOALS"
-    if "TOUCHDOWN" in s or "TD" in s:
-        if "PASS" in s: return "PASSING TDS"
-        return "TOUCHDOWNS"
     if "PASS" in s and "YARD" in s: return "PASSING YARDS"
     if "PASS" in s and "COMP" in s: return "PASS COMPLETIONS"
     if "PASS" in s and "ATT" in s: return "PASS ATTEMPTS"
+    if "PASS" in s and "TD" in s: return "PASSING TDS"
     if "PASS" in s and ("INT" in s or "INTERCEPTION" in s): return "INTERCEPTIONS"
     if "RUSH" in s and "YARD" in s: return "RUSHING YARDS"
     if "RUSH" in s and "ATT" in s: return "RUSHING ATTEMPTS"
     if ("REC" in s or "RECEIVING" in s) and "YARD" in s: return "RECEIVING YARDS"
     if "REC" in s or "RECEPTION" in s: return "RECEPTIONS"
+    if "INT" in s: return "INTERCEPTIONS"
     return s
 
 
 def canon(abbr: Any) -> str:
+    """Upper-case team code mapped to the nflverse convention."""
     a = str(abbr or "").upper().strip()
     return ABBR_CANON.get(a, a)
 
