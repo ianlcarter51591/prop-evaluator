@@ -8,7 +8,7 @@ import requests
 import streamlit as st
 
 from nfl_matchups import _defense_games
-from multi_sport_engine import canon_stat
+from nfl_six_point import canon_stat
 from sports_data import clean_name, clean_series
 
 INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
@@ -99,7 +99,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["group"] = group
     share_col = "RUSHING ATTEMPTS" if group == "rush" else ("TARGETS" if "TARGETS" in weekly.columns else "RECEPTIONS")
     if group != "rush" and share_col != "TARGETS":
-        out["notes"].append("Target counts unavailable; using reception share instead.")
+        out["notes"].append("Target counts unavailable (update sports_data.py); using reception share instead.")
     w = weekly.assign(GKEY=weekly["SEASON"].astype(int) * 100 + weekly["WEEK"].astype(int))
     rows = w[w["TEAM"] == team]
     if rows.empty:
@@ -156,11 +156,11 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     if not feed_ok:
         inferred = (streak >= 3) & ~listed
         q = np.where(inferred, 0.75, q)
-        out["notes"].append("Injury feed unavailable: teammates missing last 3+ games counted 75% out.")
+        out["notes"].append("Injury feed unavailable: teammates who missed the last 3+ games are counted 75% likely out. Add names in the injury settings to override.")
     f = f_core * n / (n + N_PRIOR)
     i = pids.index(pid) if pid in pids else -1
     if i >= 0 and q[i] > 0:
-        out["notes"].append(f"ESPN lists {player_name} as {status[i] or 'injured'}; projection assumes he plays.")
+        out["notes"].append(f"ESPN lists {player_name} as {status[i] or 'injured'}; the projection assumes he plays.")
     if i >= 0:
         q[i] = 0.0
     net = q - f
@@ -193,7 +193,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
             pen = beta * (qq - qf)
             mult -= pen
             if abs(pen) > 0.005:
-                lab = "QB1 OUT" if qq >= 0.99 else f"QB1 {qq:.0%} to miss" if qq > 0 else "QB1 back"
+                lab = "QB1 OUT" if qq >= 0.99 else f"QB1 {qq:.0%} to miss" if qq > 0 else "QB1 back (missed recent games)"
                 out["table"].append({"Teammate": qbs.loc[qb, "NAME"], "Pos": "QB", "Status": lab, "Share %": None,
                                      "Recent games missed": f"{qf:.0%}", "Weight": round(qq - qf, 2), "Stat effect %": round(-pen * 100, 1)})
     out["mult"] = float(np.clip(mult, *MULT_BOUNDS))
@@ -203,7 +203,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["checked"] = True
     show = np.flatnonzero((np.abs(net) > 0.02) & (np.abs(eff) > 1e-4))
     for j in show[np.argsort(-np.abs(eff[show]))]:
-        label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: returning"
+        label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: treated as returning (missed recent games)"
         out["table"].append({"Teammate": pool.iloc[j]["NAME"], "Pos": pool.iloc[j]["POS"], "Status": label,
                              "Share %": round(float(S[j]) * 100, 1), "Recent games missed": f"{f_core[j]:.0%}",
                              "Weight": round(float(net[j]), 2), "Stat effect %": round(float(eff[j]) * 100, 1)})
@@ -219,4 +219,15 @@ def tier_splits(weekly: pd.DataFrame, pid: str, pos: str, stat: str) -> Optional
     mine = weekly[weekly["PID"] == pid].copy()
     if mine.empty:
         return None
-    mine["
+    mine["RANK"] = rank.reindex(pd.MultiIndex.from_arrays([mine["SEASON"], mine["OPP"]])).to_numpy()
+    mine["NT"] = n_teams.reindex(mine["SEASON"]).to_numpy()
+    mine = mine.dropna(subset=["RANK"])
+    if mine.empty:
+        return None
+
+    def tier(mask: pd.Series) -> Dict[str, Any]:
+        v = mine.loc[mask, c_stat] if c_stat in mine.columns else mine.loc[mask, stat]
+        return {"avg": float(v.mean()) if len(v) else None, "n": int(len(v))}
+
+    return {"overall": tier(mine["RANK"] > 0), "soft5": tier(mine["RANK"] <= 5), "soft10": tier(mine["RANK"] <= 10),
+            "tough10": tier(mine["RANK"] > mine["NT"] - 10), "tough5": tier(mine["RANK"] > mine["NT"] - 5)}
