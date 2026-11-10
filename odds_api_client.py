@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import os
-import requests
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 import pandas as pd
+import requests
 
 API_BASE = "https://api.the-odds-api.com/v4/sports"
 
+# Official Odds API sport key mappings
+SPORT_KEYS: Dict[str, str] = {
+    "NFL": "americanfootball_nfl",
+    "NBA": "basketball_nba",
+}
+
+# Supported live markets (12 active prop markets)
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -21,7 +29,6 @@ MARKETS: Dict[str, Dict[str, str]] = {
         "Receptions": "player_receptions",
         "Kicking Points": "player_kicking_points",
         "Field Goals Made": "player_field_goals",
-        "Extra Points Made": "player_extra_points",
         "Anytime Touchdown Scorer": "player_anytime_td",
     }
 }
@@ -32,9 +39,16 @@ class OddsApiError(Exception):
     pass
 
 
-def list_events(sport_key: str, api_key: str) -> Tuple[pd.DataFrame, int]:
+def _resolve_sport_key(sport: str) -> str:
+    """Resolve display sport name to official Odds API sport key."""
+    s = str(sport or "").upper().strip()
+    return SPORT_KEYS.get(s, s.lower())
+
+
+def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, int]:
     """Fetch upcoming games/events for a given sport key."""
-    url = f"{API_BASE}/{sport_key.lower()}/events"
+    sport_key = _resolve_sport_key(sport)
+    url = f"{API_BASE}/{sport_key}/events"
     params = {"apiKey": api_key}
     resp = requests.get(url, params=params, timeout=10)
     if resp.status_code != 200:
@@ -63,12 +77,13 @@ def fetch_prop_board(
     api_key: str
 ) -> Tuple[pd.DataFrame, int]:
     """Fetch specific player prop board for a given event and market."""
-    sport_map = MARKETS.get(sport.upper(), {})
+    sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
-        raise OddsApiError(f"Market label '{market_label}' not recognized for {sport}.")
+        raise OddsApiError(f"Market label '{market_label}' is not supported for live fetching.")
 
-    url = f"{API_BASE}/{sport.lower()}/events/{event_id}/odds"
+    sport_key = _resolve_sport_key(sport)
+    url = f"{API_BASE}/{sport_key}/events/{event_id}/odds"
     params = {
         "apiKey": api_key,
         "regions": "us",
@@ -98,6 +113,20 @@ def fetch_prop_board(
     return pd.DataFrame(rows), remaining_requests
 
 
+def _synthetic_under(over_odds: float) -> float:
+    """Generate fair opposite Under odds for single-sided markets like Anytime Touchdowns."""
+    try:
+        o = float(over_odds)
+        p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
+        p_under = max(1.0 - p_over, 0.05)
+        p_juiced = min(p_under * 1.05, 0.95)
+        if p_juiced >= 0.5:
+            return -round((p_juiced / (1.0 - p_juiced)) * 100.0)
+        return round(((1.0 - p_juiced) / p_juiced) * 100.0)
+    except Exception:
+        return -110.0
+
+
 def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
     """Pivot raw outcomes table into a single row per player with Line, Over, and Under columns."""
     if board.empty:
@@ -105,16 +134,21 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
     
     pivoted = []
     for player, grp in board.groupby("Player"):
-        line = grp["Line"].dropna().iloc[0] if not grp["Line"].dropna().empty else np.nan
-        over_odds = grp[grp["Side"] == "Over"]["Odds"].values
-        under_odds = grp[grp["Side"] == "Under"]["Odds"].values
+        line_series = grp["Line"].dropna()
+        line = line_series.iloc[0] if not line_series.empty else 0.5
+        
+        over_odds = grp[grp["Side"].isin(["Over", "Yes"])]["Odds"].values
+        under_odds = grp[grp["Side"].isin(["Under", "No"])]["Odds"].values
         
         over_val = over_odds[0] if len(over_odds) > 0 else np.nan
         under_val = under_odds[0] if len(under_odds) > 0 else np.nan
         
+        if pd.notna(over_val) and pd.isna(under_val):
+            under_val = _synthetic_under(over_val)
+        
         pivoted.append({
             "Player": player,
-            "Line": float(line) if pd.notna(line) else np.nan,
+            "Line": float(line) if pd.notna(line) else 0.5,
             "Over": float(over_val) if pd.notna(over_val) else np.nan,
             "Under": float(under_val) if pd.notna(under_val) else np.nan,
         })
