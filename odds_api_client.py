@@ -9,13 +9,11 @@ import requests
 
 API_BASE = "https://api.the-odds-api.com/v4/sports"
 
-# API Sport Key translation table
 SPORT_KEYS: Dict[str, str] = {
     "NFL": "americanfootball_nfl",
     "NBA": "basketball_nba",
 }
 
-# Only include official, active market keys supported by The Odds API
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -35,18 +33,15 @@ MARKETS: Dict[str, Dict[str, str]] = {
 
 
 class OddsApiError(Exception):
-    """Custom exception for Odds API request issues."""
     pass
 
 
 def _resolve_sport_key(sport: str) -> str:
-    """Resolve user/app sport code to official Odds API sport key."""
     s = str(sport or "").upper().strip()
     return SPORT_KEYS.get(s, s.lower())
 
 
 def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, int]:
-    """Fetch upcoming games/events for a given sport."""
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events"
     params = {"apiKey": api_key}
@@ -76,7 +71,6 @@ def fetch_prop_board(
     bookmakers: Tuple[str, ...],
     api_key: str
 ) -> Tuple[pd.DataFrame, int]:
-    """Fetch specific player prop board for a given event and market."""
     sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
@@ -114,7 +108,6 @@ def fetch_prop_board(
 
 
 def _synthetic_under(over_odds: float) -> float:
-    """Generate fair synthetic opposite Under odds when only Over/Yes is listed."""
     try:
         o = float(over_odds)
         p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
@@ -129,7 +122,6 @@ def _synthetic_under(over_odds: float) -> float:
 
 
 def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
-    """Pivot raw outcomes table into a single row per player with Line, Over, and Under columns."""
     if board.empty:
         return pd.DataFrame(columns=["Player", "Line", "Over", "Under"])
     
@@ -157,6 +149,5 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
 
 
 def player_offers(board: pd.DataFrame, player_name: str) -> pd.DataFrame:
-    """Filter board summary down to a single selected player."""
     summary = summarize_board(board)
     return summary[summary["Player"] == player_name]
