@@ -1,7 +1,7 @@
 """NFL Prop Evaluator: real opponent-vs-position matchups, devigged edge, calibrated matchup weights."""
 import json
-import uuid
 import os
+import uuid
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -27,8 +27,8 @@ from multi_sport_engine import (
     stat_options,
     style_tags,
 )
-from nfl_matchups import DEFAULT_K, run_backtests
 from nfl_headshots import fetch_roster, player_photo
+from nfl_matchups import DEFAULT_K, run_backtests
 from odds_api_client import (
     MARKETS,
     OddsApiError,
