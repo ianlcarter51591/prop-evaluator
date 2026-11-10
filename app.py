@@ -9,11 +9,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop
+from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
 from nfl_matchups import DEFAULT_K, run_backtests
 from nfl_six_point import (
     BLOWOUT_SPREAD, RECENT_GAMES, GameInfo, add_six_point_column, assess, fetch_forecast, fetch_game_info, game_matches,
-    label_gameday, opponent_from_label, style_tags, canon_stat,
+    label_gameday, opponent_from_label, style_tags,
 )
 from nfl_headshots import fetch_roster, player_photo
 from odds_api_client import (
@@ -34,6 +34,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# High-Contrast Powder Blue UI Styling
 st.markdown(
     """
     <style>
@@ -149,17 +150,6 @@ AUTO_OPP = "Auto (next game)"
 K_PATH = "matchup_k.json"
 
 
-def get_stat_options() -> list[str]:
-    """Retrieve full list of active 12 prop markets."""
-    if "NFL" in MARKETS:
-        return list(MARKETS["NFL"].keys())
-    return [
-        "Passing Yards", "Pass Completions", "Pass Attempts", "Passing TDs", "Interceptions",
-        "Rushing Yards", "Rushing Attempts", "Receiving Yards", "Receptions",
-        "Kicking Points", "Field Goals Made", "Anytime Touchdown Scorer"
-    ]
-
-
 def _secret(name: str) -> str:
     try:
         if name in st.secrets:
@@ -170,14 +160,11 @@ def _secret(name: str) -> str:
 
 
 def _to_american(x: float) -> int:
-    try:
-        x = float(x)
-        if abs(x) >= 100:
-            return int(round(x))
-        if x > 1.0:
-            return int(round((x - 1.0) * 100.0)) if x >= 2.0 else int(round(-100.0 / (x - 1.0)))
-    except Exception:
-        pass
+    x = float(x)
+    if abs(x) >= 100:
+        return int(round(x))
+    if x > 1.0:
+        return int(round((x - 1.0) * 100.0)) if x >= 2.0 else int(round(-100.0 / (x - 1.0)))
     return -110
 
 
@@ -244,7 +231,7 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
 
     for k, (_, r) in enumerate(summary.iterrows()):
         name = str(r["Player"])
-        if pd.isna(r["Line"]) or pd.isna(r["Over"]):
+        if r[["Line", "Over", "Under"]].isna().any():
             out[name] = "incomplete odds"
             continue
         if progress is not None:
@@ -280,7 +267,7 @@ def render_live_panel() -> None:
         if not api_key:
             st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
             return
-        live_stat = st.selectbox("Select Prop Market", get_stat_options(), key="live_stat")
+        live_stat = st.selectbox("Select Prop Market", list(MARKETS["NFL"].keys()), key="live_stat")
         if st.button("Step 1: Load Upcoming Games", key="load_games"):
             try:
                 events, _ = list_events("NFL", api_key)
@@ -384,14 +371,15 @@ def render_final_assessment(res: Dict[str, Any]) -> None:
         icon = "✅" if ck["passed"] else ("⚪" if not ck["verified"] else "❌")
         st.markdown(f"{icon} **{ck['label']}**: {ck['detail']}")
     st.caption(f"Defensive ranks use what each defense allows this position group (season-long, and its last {RECENT_GAMES} games). "
-               f"Spread comes from the ESPN scoreboard (blowout = {BLOWOUT_SPREAD:g}+); weather is the Open-Meteo forecast for kickoff at outdoor stadiums.")
+               f"Spread comes from the ESPN scoreboard (blowout = {BLOWOUT_SPREAD:g}+); weather is the Open-Meteo forecast for kickoff at outdoor stadiums. "
+               "Thresholds live at the top of nfl_six_point.py.")
 
 
 def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
     m = res.get("matchup")
     st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
     if not m:
-        st.info("No matchup adjustment applied. Pick an opponent (or Auto) to see rank vs position.")
+        st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
         return
     venue = "" if m["home"] is None else ("vs " if m["home"] else "@ ")
     wk = f" · Wk {m['week']}" if m.get("week") else ""
@@ -443,7 +431,7 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
     st.markdown("### 🏈 Live Game Script")
     spec = live_game.spec_for(stat_category)
     if spec is None:
-        st.caption("No live game-script model for this stat (kicker, combos, INTs and longest-play props are skipped).")
+        st.caption("No live game-script model for this stat (combos, INTs and longest-play props are skipped).")
         return
     game = live_game.find_game(res["team"])
     if game is None:
@@ -488,6 +476,10 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
     _metric(d[1], "REMAINING PROJ", f"{out['mu_rem']:.1f}")
     _metric(d[2], "PACE MULT (REST OF GAME)", f"x{out['mult']:.3f}", _tone(out["mult"] - 1))
     _metric(d[3], "LIVE KELLY (¼)", f"{out['kelly_pct']:.1f}% BR")
+    st.caption(
+        f"Game-script sensitivities are default assumptions (beta = {spec.beta:+.2f} on remaining volume). "
+        "Compare against a fresh live line: a stale pregame price will overstate the edge."
+    )
 
 
 def render_contextual_reality_check() -> None:
@@ -511,7 +503,7 @@ def render_injury_usage(res: Dict[str, Any]) -> None:
     grp = inj.get("group")
     share_lbl = {"rec": "TARGET SHARE", "rush": "CARRY SHARE"}.get(grp)
     c = st.columns(4)
-    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Special Teams / Pass-Rush")
+    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Passing game")
     _metric(c[1], "USAGE ADJ", f"x{inj['mult']:.3f}", "good" if inj["mult"] > 1.0005 else "bad" if inj["mult"] < 0.9995 else "neutral")
     um = float(res.get("usage_mult", inj["mult"])) or 1.0
     _metric(c[2], "PROJ BEFORE USAGE", f"{res['mu'] / um:.2f}")
@@ -522,6 +514,11 @@ def render_injury_usage(res: Dict[str, Any]) -> None:
         st.caption("🩺 The injury feed lists no relevant teammates for this team.")
     if inj["table"]:
         st.dataframe(pd.DataFrame(inj["table"]), use_container_width=True, hide_index=True)
+        st.caption("Weight = P(misses) minus the share of his recent games already missed (no double counting; a returning teammate pulls usage back down). "
+                   "Absorption rates are assumptions; scale them in the injury settings.")
+    else:
+        st.caption("No injured or returning teammates move this projection. Add names in the injury settings if the feed is stale.")
+    st.caption("The projection, simulation, edge, EV and verdict above already include this usage adjustment.")
 
 
 def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
@@ -533,6 +530,7 @@ def render_tiers(res: Dict[str, Any], stat_category: str) -> None:
     c = st.columns(5)
     for col, lab, key in zip(c, ["ALL GAMES", "VS 5 SOFTEST", "VS 10 SOFTEST", "VS 10 TOUGHEST", "VS 5 TOUGHEST"], ["overall", "soft5", "soft10", "tough10", "tough5"]):
         _metric(col, lab, fmt(t[key]))
+    st.caption(f"Each defense is ranked per season by what it allowed {res.get('pos', 'this position')}s in {stat_category} (1 = softest). Small samples: context, not an adjustment.")
 
 
 def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
@@ -546,8 +544,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
     _metric(c[1], "EWMA (PRE-MATCHUP)", f"{res['base_proj']:.2f}")
     _metric(c[2], "BEST SIDE (BY EV)", res["best_side"], _tone(res["ev_pct"]))
-    fair_odds_val = res.get("fair_odds")
-    fair_odds_disp = f"{int(round(fair_odds_val)):+d}" if isinstance(fair_odds_val, (int, float)) and pd.notna(fair_odds_val) else str(fair_odds_val or "")
+    fair_odds_disp = f"{int(round(res['fair_odds'])):+d}" if isinstance(res.get("fair_odds"), (int, float)) else str(res.get("fair_odds", ""))
     _metric(c[3], "FAIR ODDS", fair_odds_disp)
     _metric(c[4], "EDGE VS DEVIG", f"{res['edge_pp']:+.1f} pp", _tone(res["edge_pp"]))
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
@@ -572,6 +569,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     render_contextual_reality_check()
     
     st.markdown("### 📊 Game Log Performance")
+    st.caption("Last 10 games (faded bars = last season). Dashed blue = line, dotted orange = model projection.")
     gl = pd.DataFrame(res["gamelog_details"])
     if gl.empty:
         return
@@ -595,6 +593,11 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
 
 def render_matchup_backtest() -> None:
     ss = st.session_state
+    st.markdown(
+        "Estimates **k** in `stat ÷ player's season average = 1 + k × (opponent index − 1)`, with the opponent index built "
+        "only from games played *before* each matchup (no look-ahead), clustered by player. k = 0.35 means a defense "
+        "allowing 10% more than average lifts a projection 3.5%. Results are shrunk toward the default before use."
+    )
     c1, c2 = st.columns(2)
     n_seasons = c1.slider("Seasons to backtest", 1, 4, 3)
     c2.write("")
@@ -611,6 +614,8 @@ def render_matchup_backtest() -> None:
     table = ss.get("mbt_table")
     if table is not None and not table.empty:
         st.dataframe(table.round(3), use_container_width=True, hide_index=True)
+        st.caption("K_HAT is the raw estimate, K_EFF is what the model will use. SIGNIFICANT = |K_HAT| ≥ 2 × SE. "
+                   "Stats where it's 'no' are still dominated by noise; K_EFF stays close to the default.")
         a, b = st.columns(2)
         if a.button("✅ Apply to model", key="apply_mbt"):
             ss["matchup_k"] = {r.STAT: float(r.K_EFF) for r in table.itertuples()}
@@ -620,9 +625,15 @@ def render_matchup_backtest() -> None:
             ss["matchup_k"] = None
             save_k_file(None)
             st.toast("Back to default weights")
+    elif table is not None:
+        st.warning("Not enough player-games for any stat. Try more seasons.")
     active = ss.get("matchup_k")
+    st.markdown("**Active matchup weights**" + (" (backtested)" if active else " (default assumptions)"))
     st.dataframe(pd.DataFrame({"STAT": list(DEFAULT_K), "k": [round((active or DEFAULT_K).get(s, DEFAULT_K[s]), 3) for s in DEFAULT_K]}),
                  use_container_width=True, hide_index=True)
+    if active:
+        st.caption("To make these permanent, paste into DEFAULT_K in nfl_matchups.py:")
+        st.code("DEFAULT_K = " + json.dumps({k: round(v, 3) for k, v in active.items()}, indent=4), language="python")
 
 
 def main() -> None:
@@ -639,7 +650,7 @@ def main() -> None:
     def_player, def_line = DEFAULTS
     if "matchup_k" not in ss:
         ss["matchup_k"] = load_k_file()
-    for key, default in (("input_player", def_player), ("input_stat", get_stat_options()[0]), ("input_line", float(def_line)),
+    for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
                          ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
         ss.setdefault(key, default)
@@ -649,15 +660,16 @@ def main() -> None:
         render_live_scoreboard()
         render_live_panel()
         with st.expander("🩺 Injuries & usage settings", expanded=False):
-            st.checkbox("Adjust for injured / returning teammates", key="adj_inj")
-            st.slider("Absorption strength", 0.5, 1.0, key="adj_absorb", step=0.05)
-            st.text_input("Teammates OUT", key="adj_out")
-            st.text_input("Teammates QUESTIONABLE", key="adj_q")
-            st.text_input("Teammates ACTIVE", key="adj_in")
+            st.checkbox("Adjust for injured / returning teammates (target and carry share redistribution)", key="adj_inj")
+            st.slider("Absorption strength (scales how much of an absent player's share teammates pick up)", 0.5, 1.0, key="adj_absorb", step=0.05)
+            st.text_input("Teammates OUT (comma-separated; adds to the ESPN feed)", key="adj_out")
+            st.text_input("Teammates QUESTIONABLE (counted as 50%)", key="adj_q")
+            st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
+            st.caption("Applies when you press Evaluate. Check the team's report close to kickoff: the feed can lag.")
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
-            stat_category = c2.selectbox("Stat Category", get_stat_options(), key="input_stat")
+            stat_category = c2.selectbox("Stat Category", stat_options(), key="input_stat")
             line_val = c3.number_input("Line", step=0.5, key="input_line")
             c4, c5, c6, c7 = st.columns(4)
             over_odds = c4.number_input("Over Odds", key="input_over")
@@ -694,6 +706,21 @@ def main() -> None:
             else:
                 render_results(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
 
+        with st.expander("ℹ️ How the model works"):
+            st.markdown(
+                "- **Projection Model**: *Model* = shrunk EWMA × matchup; *My mean* / *My median* = raw mean / median of the last 10 games × matchup.\n"
+                "- **Projection** = (EWMA of this season's last 8 games blended with last season's average, ~4 pseudo-games of prior weight) × matchup multiplier.\n"
+                "- **Matchup** = what the opponent allows per game to your player's position group (QB/RB/WR/TE) for this exact stat, "
+                "shrunk toward last season, ranked 1-32 (1 = allows the most). Multiplier = 1 + k × (index − 1), clipped to ±15%.\n"
+                "- **Distribution**: Gamma for yardage, Normal for completions/attempts/carries, Negative Binomial (Poisson if under-dispersed) for TDs, receptions, INTs. 50,000 seeded draws.\n"
+                "- **Market**: two-way multiplicative devig. Edge = model % − devigged market %. EV uses the model probability at the offered price (pushes refunded).\n"
+                "- **Final assessment (6-point check)**: baby line, AI edge, implied chance, defensive rank (season + last 4 games), injury flags, game script (spread under 10, no bad weather). "
+                "6/6 = SHARP, 5/6 = LEAN; checks that can't be verified count as failed. Thresholds are in nfl_six_point.py.\n"
+                "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0.\n"
+                "- **Injuries & usage**: injured teammates' target share (receiving) or carry share (rushing) is redistributed to the others in proportion to their own share "
+                "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect, so a returning teammate pulls usage back down. "
+                "Passing props lose a little efficiency when top targets are out, and receivers lose a little when the QB is out. The projection is shifted and the verdict re-priced; absorption rates are assumptions."
+            )
     with tab_bt:
         render_matchup_backtest()
 
