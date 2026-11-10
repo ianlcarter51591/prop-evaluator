@@ -14,7 +14,7 @@ SPORT_KEYS: Dict[str, str] = {
     "NBA": "basketball_nba",
 }
 
-# Strictly valid Odds API market keys (Kicker props included)
+# Strictly valid Odds API market keys (Kicker & TD props included)
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
@@ -39,11 +39,13 @@ class OddsApiError(Exception):
 
 
 def _resolve_sport_key(sport: str) -> str:
+    """Resolve display sport name to official Odds API sport key."""
     s = str(sport or "").upper().strip()
     return SPORT_KEYS.get(s, s.lower())
 
 
 def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, int]:
+    """Fetch upcoming games/events for a given sport key."""
     sport_key = _resolve_sport_key(sport)
     url = f"{API_BASE}/{sport_key}/events"
     params = {"apiKey": api_key}
@@ -73,6 +75,7 @@ def fetch_prop_board(
     bookmakers: Tuple[str, ...],
     api_key: str
 ) -> Tuple[pd.DataFrame, int]:
+    """Fetch specific player prop board for a given event and market."""
     sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
     market_key = sport_map.get(market_label)
     if not market_key:
@@ -131,7 +134,7 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
     pivoted = []
     for player, grp in board.groupby("Player"):
         line_series = grp["Line"].dropna()
-        line = line_series.iloc[0] if not line_series.empty else 0.5
+        line = line_series.iloc[0] if not line_series.empty else np.nan
         
         over_odds = grp[grp["Side"].isin(["Over", "Yes"])]["Odds"].values
         under_odds = grp[grp["Side"].isin(["Under", "No"])]["Odds"].values
@@ -145,7 +148,7 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
         
         pivoted.append({
             "Player": player,
-            "Line": float(line) if pd.notna(line) else 0.5,
+            "Line": float(line) if pd.notna(line) else np.nan,
             "Over": float(over_val) if pd.notna(over_val) else np.nan,
             "Under": float(under_val) if pd.notna(under_val) else np.nan,
         })
@@ -153,5 +156,6 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
 
 
 def player_offers(board: pd.DataFrame, player_name: str) -> pd.DataFrame:
+    """Filter board summary down to a single selected player."""
     summary = summarize_board(board)
     return summary[summary["Player"] == player_name]
