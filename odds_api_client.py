@@ -1,129 +1,127 @@
-"""Client for fetching live player props from The Odds API."""
+"""Odds API client for fetching live DraftKings player prop markets."""
 from __future__ import annotations
 
+import os
 import requests
+from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
-from typing import Dict, Any, Tuple, List
 
-BASE_URL = "https://api.the-odds-api.com/v4"
-DEFAULT_BOOKS = "draftkings"
+API_BASE = "https://api.the-odds-api.com/v4/sports"
 
-SPORT_KEYS: Dict[str, str] = {
-    "NFL": "americanfootball_nfl",
-    "NBA": "basketball_nba",
-}
-
-# Mapping user-friendly names to official market keys required by The Odds API
 MARKETS: Dict[str, Dict[str, str]] = {
     "NFL": {
         "Passing Yards": "player_pass_yds",
         "Pass Completions": "player_pass_completions",
         "Pass Attempts": "player_pass_attempts",
         "Passing TDs": "player_pass_tds",
+        "Interceptions": "player_pass_interceptions",
         "Rushing Yards": "player_rush_yds",
         "Rushing Attempts": "player_rush_attempts",
         "Receiving Yards": "player_reception_yds",
         "Receptions": "player_receptions",
-        "Interceptions": "player_pass_interceptions",
-    },
-    "NBA": {
-        "Points": "player_points",
-        "Rebounds": "player_rebounds",
-        "Assists": "player_assists",
-        "3-Pointers Made": "player_threes",
-        "Pts + Reb + Ast": "player_points_rebounds_assists",
-        "Steals": "player_steals",
-        "Blocks": "player_blocks",
-    },
+        "Kicking Points": "player_kicking_points",
+        "Field Goals Made": "player_field_goals",
+        "Extra Points Made": "player_extra_points",
+        "Anytime Touchdown Scorer": "player_anytime_td",
+    }
 }
 
+
 class OddsApiError(Exception):
+    """Custom exception for Odds API request issues."""
     pass
 
-def parse_books(books_str: str) -> Tuple[str, ...]:
-    return tuple(b.strip().lower() for b in books_str.split(",") if b.strip())
 
-def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, Any]:
-    sport_key = SPORT_KEYS.get(sport.upper(), "americanfootball_nfl")
-    url = f"{BASE_URL}/sports/{sport_key}/events"
+def list_events(sport_key: str, api_key: str) -> Tuple[pd.DataFrame, int]:
+    """Fetch upcoming games/events for a given sport key."""
+    url = f"{API_BASE}/{sport_key.lower()}/events"
     params = {"apiKey": api_key}
+    resp = requests.get(url, params=params, timeout=10)
+    if resp.status_code != 200:
+        raise OddsApiError(f"API Error ({resp.status_code}): {resp.text}")
     
-    res = requests.get(url, params=params, timeout=10)
-    if res.status_code != 200:
-        raise OddsApiError(f"API Error ({res.status_code}): {res.text}")
+    data = resp.json()
+    remaining_requests = int(resp.headers.get("x-requests-remaining", 0))
     
-    events = res.json()
     rows = []
-    for e in events:
-        home = e.get("home_team", "Home")
-        away = e.get("away_team", "Away")
+    for ev in data:
         rows.append({
-            "id": e.get("id"),
-            "label": f"{away} @ {home}",
-            "commence_time": e.get("commence_time")
+            "id": ev["id"],
+            "commence_time": ev["commence_time"],
+            "home_team": ev["home_team"],
+            "away_team": ev["away_team"],
+            "label": f"{ev['away_team']} @ {ev['home_team']} ({ev['commence_time']})"
         })
-    return pd.DataFrame(rows), None
+    return pd.DataFrame(rows), remaining_requests
+
 
 def fetch_prop_board(
-    sport: str, event_id: str, market_label: str, books: Tuple[str, ...], api_key: str
-) -> Tuple[pd.DataFrame, Any]:
-    sport_key = SPORT_KEYS.get(sport.upper(), "americanfootball_nfl")
-    market_key = MARKETS.get(sport.upper(), {}).get(market_label, "player_pass_yds")
-    book_param = ",".join(books) if books else "draftkings"
-    
-    url = f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds"
+    sport: str,
+    event_id: str,
+    market_label: str,
+    bookmakers: Tuple[str, ...],
+    api_key: str
+) -> Tuple[pd.DataFrame, int]:
+    """Fetch specific player prop board for a given event and market."""
+    sport_map = MARKETS.get(sport.upper(), {})
+    market_key = sport_map.get(market_label)
+    if not market_key:
+        raise OddsApiError(f"Market label '{market_label}' not recognized for {sport}.")
+
+    url = f"{API_BASE}/{sport.lower()}/events/{event_id}/odds"
     params = {
         "apiKey": api_key,
         "regions": "us",
         "markets": market_key,
-        "bookmakers": book_param,
+        "bookmakers": ",".join(bookmakers),
         "oddsFormat": "american",
     }
+    resp = requests.get(url, params=params, timeout=10)
+    if resp.status_code != 200:
+        raise OddsApiError(f"API Error ({resp.status_code}): {resp.text}")
+
+    remaining_requests = int(resp.headers.get("x-requests-remaining", 0))
+    data = resp.json()
     
-    res = requests.get(url, params=params, timeout=10)
-    if res.status_code != 200:
-        raise OddsApiError(f"API Error ({res.status_code}): {res.text}")
-    
-    data = res.json()
     rows = []
-    for b in data.get("bookmakers", []):
-        book_name = b.get("title", "DraftKings")
-        for m in b.get("markets", []):
-            for outcome in m.get("outcomes", []):
+    for bmark in data.get("bookmakers", []):
+        book_title = bmark.get("title", bmark.get("key"))
+        for mkt in bmark.get("markets", []):
+            for outcome in mkt.get("outcomes", []):
                 rows.append({
+                    "Bookmaker": book_title,
                     "Player": outcome.get("description", outcome.get("name")),
-                    "Book": book_name,
-                    "Type": outcome.get("name"),  # Over or Under
-                    "Line": outcome.get("point", 0.0),
-                    "Price": outcome.get("price", -110),
+                    "Side": outcome.get("name"),
+                    "Line": outcome.get("point", np.nan),
+                    "Odds": outcome.get("price"),
                 })
-    return pd.DataFrame(rows), None
+    return pd.DataFrame(rows), remaining_requests
+
 
 def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
+    """Pivot raw outcomes table into a single row per player with Line, Over, and Under columns."""
     if board.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["Player", "Line", "Over", "Under"])
     
-    players = board["Player"].unique()
-    rows = []
-    for p in players:
-        p_df = board[board["Player"] == p]
-        line = p_df["Line"].iloc[0] if not p_df.empty else 0.0
-        over_row = p_df[p_df["Type"] == "Over"]
-        under_row = p_df[p_df["Type"] == "Under"]
+    pivoted = []
+    for player, grp in board.groupby("Player"):
+        line = grp["Line"].dropna().iloc[0] if not grp["Line"].dropna().empty else np.nan
+        over_odds = grp[grp["Side"] == "Over"]["Odds"].values
+        under_odds = grp[grp["Side"] == "Under"]["Odds"].values
         
-        over_price = over_row["Price"].iloc[0] if not over_row.empty else -110
-        under_price = under_row["Price"].iloc[0] if not under_row.empty else -110
+        over_val = over_odds[0] if len(over_odds) > 0 else np.nan
+        under_val = under_odds[0] if len(under_odds) > 0 else np.nan
         
-        rows.append({
-            "Player": p,
-            "Line": line,
-            "Over": over_price,
-            "Under": under_price,
+        pivoted.append({
+            "Player": player,
+            "Line": float(line) if pd.notna(line) else np.nan,
+            "Over": float(over_val) if pd.notna(over_val) else np.nan,
+            "Under": float(under_val) if pd.notna(under_val) else np.nan,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(pivoted)
 
-def player_offers(board: pd.DataFrame, player: str) -> pd.DataFrame:
-    p_df = board[board["Player"] == player]
-    if p_df.empty:
-        return pd.DataFrame()
-    return summarize_board(p_df)
+
+def player_offers(board: pd.DataFrame, player_name: str) -> pd.DataFrame:
+    """Filter board summary down to a single selected player."""
+    summary = summarize_board(board)
+    return summary[summary["Player"] == player_name]
