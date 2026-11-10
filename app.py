@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop, stat_options
+from multi_sport_engine import DEFAULTS, SOURCES, default_season, evaluate_prop
 from nfl_matchups import DEFAULT_K, run_backtests
 from nfl_six_point import (
     BLOWOUT_SPREAD, RECENT_GAMES, GameInfo, add_six_point_column, assess, fetch_forecast, fetch_game_info, game_matches,
@@ -34,7 +34,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# High-Contrast Powder Blue UI Styling
 st.markdown(
     """
     <style>
@@ -148,6 +147,14 @@ st.markdown(
 
 AUTO_OPP = "Auto (next game)"
 K_PATH = "matchup_k.json"
+
+
+def get_stat_options() -> list[str]:
+    return [
+        "Passing Yards", "Pass Completions", "Pass Attempts", "Passing TDs", "Interceptions",
+        "Rushing Yards", "Rushing Attempts", "Receiving Yards", "Receptions",
+        "Kicking Points", "Field Goals Made", "Extra Points Made", "Anytime Touchdown Scorer"
+    ]
 
 
 def _secret(name: str) -> str:
@@ -267,7 +274,8 @@ def render_live_panel() -> None:
         if not api_key:
             st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
             return
-        live_stat = st.selectbox("Select Prop Market", list(MARKETS["NFL"].keys()), key="live_stat")
+        markets_list = list(MARKETS["NFL"].keys()) if "NFL" in MARKETS else get_stat_options()
+        live_stat = st.selectbox("Select Prop Market", markets_list, key="live_stat")
         if st.button("Step 1: Load Upcoming Games", key="load_games"):
             try:
                 events, _ = list_events("NFL", api_key)
@@ -379,7 +387,7 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
     m = res.get("matchup")
     st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
     if not m:
-        st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
+        st.info("No matchup adjustment applied. Pick an opponent (or Auto) to see rank vs position.")
         return
     venue = "" if m["home"] is None else ("vs " if m["home"] else "@ ")
     wk = f" · Wk {m['week']}" if m.get("week") else ""
@@ -431,7 +439,7 @@ def render_live_script(res: Dict[str, Any], stat_category: str) -> None:
     st.markdown("### 🏈 Live Game Script")
     spec = live_game.spec_for(stat_category)
     if spec is None:
-        st.caption("No live game-script model for this stat (combos, INTs and longest-play props are skipped).")
+        st.caption("No live game-script model for this stat (kicker, combos, INTs and longest-play props are skipped).")
         return
     game = live_game.find_game(res["team"])
     if game is None:
@@ -503,7 +511,7 @@ def render_injury_usage(res: Dict[str, Any]) -> None:
     grp = inj.get("group")
     share_lbl = {"rec": "TARGET SHARE", "rush": "CARRY SHARE"}.get(grp)
     c = st.columns(4)
-    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Passing game")
+    _metric(c[0], share_lbl or "ROLE", f"{inj['share']:.1f}%" if share_lbl and inj.get("share") is not None else "Special Teams / Pass-Rush")
     _metric(c[1], "USAGE ADJ", f"x{inj['mult']:.3f}", "good" if inj["mult"] > 1.0005 else "bad" if inj["mult"] < 0.9995 else "neutral")
     um = float(res.get("usage_mult", inj["mult"])) or 1.0
     _metric(c[2], "PROJ BEFORE USAGE", f"{res['mu'] / um:.2f}")
@@ -650,7 +658,7 @@ def main() -> None:
     def_player, def_line = DEFAULTS
     if "matchup_k" not in ss:
         ss["matchup_k"] = load_k_file()
-    for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
+    for key, default in (("input_player", def_player), ("input_stat", get_stat_options()[0]), ("input_line", float(def_line)),
                          ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
         ss.setdefault(key, default)
@@ -669,7 +677,7 @@ def main() -> None:
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
-            stat_category = c2.selectbox("Stat Category", stat_options(), key="input_stat")
+            stat_category = c2.selectbox("Stat Category", get_stat_options(), key="input_stat")
             line_val = c3.number_input("Line", step=0.5, key="input_line")
             c4, c5, c6, c7 = st.columns(4)
             over_odds = c4.number_input("Over Odds", key="input_over")
@@ -710,16 +718,15 @@ def main() -> None:
             st.markdown(
                 "- **Projection Model**: *Model* = shrunk EWMA × matchup; *My mean* / *My median* = raw mean / median of the last 10 games × matchup.\n"
                 "- **Projection** = (EWMA of this season's last 8 games blended with last season's average, ~4 pseudo-games of prior weight) × matchup multiplier.\n"
-                "- **Matchup** = what the opponent allows per game to your player's position group (QB/RB/WR/TE) for this exact stat, "
+                "- **Matchup** = what the opponent allows per game to your player's position group (QB/RB/WR/TE/K) for this exact stat, "
                 "shrunk toward last season, ranked 1-32 (1 = allows the most). Multiplier = 1 + k × (index − 1), clipped to ±15%.\n"
-                "- **Distribution**: Gamma for yardage, Normal for completions/attempts/carries, Negative Binomial (Poisson if under-dispersed) for TDs, receptions, INTs. 50,000 seeded draws.\n"
+                "- **Distribution**: Gamma for yardage/kicking points, Normal for completions/attempts/carries, Negative Binomial (Poisson if under-dispersed) for TDs, FGs, XPs, receptions, INTs. 50,000 seeded draws.\n"
                 "- **Market**: two-way multiplicative devig. Edge = model % − devigged market %. EV uses the model probability at the offered price (pushes refunded).\n"
                 "- **Final assessment (6-point check)**: baby line, AI edge, implied chance, defensive rank (season + last 4 games), injury flags, game script (spread under 10, no bad weather). "
                 "6/6 = SHARP, 5/6 = LEAN; checks that can't be verified count as failed. Thresholds are in nfl_six_point.py.\n"
                 "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0.\n"
                 "- **Injuries & usage**: injured teammates' target share (receiving) or carry share (rushing) is redistributed to the others in proportion to their own share "
-                "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect, so a returning teammate pulls usage back down. "
-                "Passing props lose a little efficiency when top targets are out, and receivers lose a little when the QB is out. The projection is shifted and the verdict re-priced; absorption rates are assumptions."
+                "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect. Kicker props skip skill-position share redistribution."
             )
     with tab_bt:
         render_matchup_backtest()
