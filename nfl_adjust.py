@@ -1,4 +1,16 @@
-"""NFL injury / opportunity redistribution and defense-tier splits (called natively by multi_sport_engine.evaluate_prop)."""
+"""NFL injury / opportunity redistribution and defense-tier splits (called natively by multi_sport_engine.evaluate_prop).
+
+Math (all constants are named assumptions you can tune or backtest):
+  Opportunity shares come from the team's last 17 games: s_j = stat_j / team_stat over the games j played
+  (targets for receiving and passing quality, carries for rushing).
+  1. Receiving / rushing: a missing teammate j frees s_j.  Teammate i absorbs
+         lift_ij = alpha * s_j * B_ij / sum_{k != j} a_k * s_k * B_kj
+     (a_k = P(k plays); B = 1.5 when k and j share a position, else 1), so lift is proportional to existing share.
+     Multiplier = 1 + gamma_stat * sum_j (q_j - f_j) * lift_ij, where q_j = P(j misses) and f_j = the share of i's
+     baseline built from games j missed (no double counting; a returning teammate pulls usage back down).
+  2. Passing: lost receiving quality = sum_j (q_j - f_j) * s_j;  multiplier = 1 - lambda_stat * lost.
+  3. QB1 out lowers receiver output by beta * (q - f).
+"""
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -8,28 +20,26 @@ import requests
 import streamlit as st
 
 from nfl_matchups import _defense_games
-from nfl_six_point import canon_stat
 from sports_data import clean_name, clean_series
 
 INJURY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-WINDOW_GAMES, RECENT_GAMES, N_PRIOR, DECAY = 17, 8, 4.0, 0.85
+WINDOW_GAMES, RECENT_GAMES, N_PRIOR, DECAY = 17, 8, 4.0, 0.85     # N_PRIOR and DECAY match the engine's projection
 SAME_POS_BOOST, MAX_LIFT, MULT_BOUNDS = 1.5, 1.00, (0.70, 1.55)
 ABSORB: Dict[str, float] = {"rec": 0.90, "rush": 0.85}
 RECEIVERS, RUSHERS = {"WR", "TE", "RB"}, {"RB"}
+# engine stat label -> (group, gamma (rec/rush) or lambda (pass), qb_beta)
 STAT_MAP: Dict[str, Tuple[str, float, float]] = {
     "PASS ATTEMPTS": ("pass", 0.00, 0.0), "PASS COMPLETIONS": ("pass", 0.10, 0.0),
-    "PASSING YARDS": ("pass", 0.15, 0.0), "PASS YARDS": ("pass", 0.15, 0.0),
-    "PASSING TDS": ("pass", 0.12, 0.0), "PASS TDS": ("pass", 0.12, 0.0),
-    "RUSHING ATTEMPTS": ("rush", 0.90, 0.0), "RUSH ATTEMPTS": ("rush", 0.90, 0.0),
-    "RUSHING YARDS": ("rush", 0.85, 0.0), "RUSH YARDS": ("rush", 0.85, 0.0),
-    "RECEPTIONS": ("rec", 0.95, 0.05),
-    "RECEIVING YARDS": ("rec", 0.85, 0.08), "REC YARDS": ("rec", 0.85, 0.08),
+    "PASSING YARDS": ("pass", 0.15, 0.0), "PASSING TDS": ("pass", 0.12, 0.0),
+    "RUSHING ATTEMPTS": ("rush", 0.90, 0.0), "RUSHING YARDS": ("rush", 0.85, 0.0),
+    "RECEPTIONS": ("rec", 0.95, 0.05), "RECEIVING YARDS": ("rec", 0.85, 0.08),
 }
 INJ_COLS = ["NAME", "STATUS", "P_OUT"]
 
 
 def _walk(obj: Any) -> Iterator[Dict[str, Any]]:
+    """Yield every dict nested anywhere in a JSON structure."""
     stack: List[Any] = [obj]
     while stack:
         o = stack.pop()
@@ -41,10 +51,12 @@ def _walk(obj: Any) -> Iterator[Dict[str, Any]]:
 
 
 def _status_text(v: Any) -> str:
+    """Status may be a string or a dict with description/name."""
     return str(v.get("description") or v.get("name") or "") if isinstance(v, dict) else str(v or "")
 
 
 def p_out(status: str, text: str = "") -> float:
+    """Probability a listed player misses the game."""
     s, t = status.lower(), f"{status} {text}".lower()
     if re.search(r"\b(out|ir|pup|nfi|injured reserve|suspend\w*)\b", s):
         return 1.0
@@ -58,6 +70,7 @@ def p_out(status: str, text: str = "") -> float:
 
 
 def parse_injuries(data: Any) -> pd.DataFrame:
+    """Any dict with an 'athlete' and a 'status' is one injury entry (structure-agnostic)."""
     rows: List[Dict[str, Any]] = []
     for d in _walk(data):
         ath = d.get("athlete")
@@ -74,6 +87,7 @@ def parse_injuries(data: Any) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_injuries() -> Tuple[pd.DataFrame, bool]:
+    """ESPN NFL injury report and whether it parsed (a league-wide report is never empty in season)."""
     try:
         resp = requests.get(INJURY_URL, headers=HEADERS, timeout=10)
         resp.raise_for_status()
@@ -84,14 +98,16 @@ def load_injuries() -> Tuple[pd.DataFrame, bool]:
 
 
 def presence(win: pd.DataFrame, pids: List[str], gkeys: List[int]) -> np.ndarray:
+    """(K, n) bool: did player k appear in the team's weekly stats for game g?"""
     seen = set(zip(win["PID"], win["GKEY"]))
     return np.array([[(k, g) in seen for g in gkeys] for k in pids], dtype=bool).reshape(len(pids), len(gkeys))
 
 
 def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.DataFrame, season: int, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Stat multiplier from injured / returning teammates, plus the table behind it."""
     out: Dict[str, Any] = {"mult": 1.0, "table": [], "listed": [], "notes": [], "feed_ok": True, "share": None, "group": None,
                            "checked": False, "self_status": "", "qb_flag": ""}
-    spec = STAT_MAP.get(stat) or STAT_MAP.get(canon_stat(stat))
+    spec = STAT_MAP.get(stat)
     if spec is None:
         out["notes"].append(f"Injury adjustment skipped: no opportunity model for {stat.title()}.")
         return out
@@ -120,6 +136,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["feed_ok"] = feed_ok
     feed = (league.assign(KEY=clean_series(league["NAME"])).sort_values("P_OUT", ascending=False).drop_duplicates("KEY").set_index("KEY")
             if not league.empty else pd.DataFrame(columns=INJ_COLS))
+    # The player's own report status (for the six-point injury check); manual overrides apply to him too.
     self_cn = pl.loc[pid, "CNAME"]
     self_p = float(feed["P_OUT"].get(self_cn, 0.0)) if not feed.empty else 0.0
     self_status = str(feed["STATUS"].get(self_cn, "")) if not feed.empty else ""
@@ -179,7 +196,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     else:
         eff = -coef * net * S
     mult = 1.0 + float(eff.sum())
-    if group == "rec" and beta > 0:
+    if group == "rec" and beta > 0:               # QB1 out lowers receiver output
         qbs = pl[pl["POS"] == "QB"]
         if not qbs.empty and qbs["PA"].max() > 0:
             qb = qbs["PA"].idxmax()
@@ -200,7 +217,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
     out["share"] = float(pl.loc[pid, "SHARE"]) * 100.0
     out["listed"] = [{"name": str(pool.iloc[j]["NAME"]), "status": status[j] or "listed", "p_out": float(q[j])}
                      for j in np.flatnonzero(listed) if j != i]
-    out["checked"] = True
+    out["checked"] = True   # reached the end: listed teammates, QB and the player's own status are all populated
     show = np.flatnonzero((np.abs(net) > 0.02) & (np.abs(eff) > 1e-4))
     for j in show[np.argsort(-np.abs(eff[show]))]:
         label = ("OUT" if q[j] >= 0.99 else f"{q[j]:.0%} to miss" + (" (inferred)" if inferred[j] else "")) if q[j] > 0 else "Not listed: treated as returning (missed recent games)"
@@ -211,10 +228,10 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
 
 
 def tier_splits(weekly: pd.DataFrame, pid: str, pos: str, stat: str) -> Optional[Dict[str, Any]]:
-    c_stat = canon_stat(stat)
-    g = _defense_games(weekly, c_stat, pos)
+    """Player's average vs the toughest / softest defenses (ranked per season by what they allow his position for this stat)."""
+    g = _defense_games(weekly, stat, pos)
     allowed = g.groupby(["SEASON", "OPP"])["V"].mean()
-    rank = allowed.groupby(level=0).rank(ascending=False, method="min")
+    rank = allowed.groupby(level=0).rank(ascending=False, method="min")       # 1 = allows the most = softest
     n_teams = allowed.groupby(level=0).size()
     mine = weekly[weekly["PID"] == pid].copy()
     if mine.empty:
@@ -226,7 +243,7 @@ def tier_splits(weekly: pd.DataFrame, pid: str, pos: str, stat: str) -> Optional
         return None
 
     def tier(mask: pd.Series) -> Dict[str, Any]:
-        v = mine.loc[mask, c_stat] if c_stat in mine.columns else mine.loc[mask, stat]
+        v = mine.loc[mask, stat]
         return {"avg": float(v.mean()) if len(v) else None, "n": int(len(v))}
 
     return {"overall": tier(mine["RANK"] > 0), "soft5": tier(mine["RANK"] <= 5), "soft10": tier(mine["RANK"] <= 10),
