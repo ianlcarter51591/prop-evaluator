@@ -1,7 +1,9 @@
 """NFL Prop Evaluator: real opponent-vs-position matchups, devigged edge, calibrated matchup weights."""
+import io
 import json
-import uuid
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -39,6 +41,11 @@ from odds_api_client import (
     summarize_board,
 )
 from sports_data import NFL_TEAMS, load_weekly
+import cloud_store
+import nfl_bet_log as bl
+import nfl_snapshots as snaps_mod
+import nfl_vegas
+import shared_ui
 import live_game
 
 st.set_page_config(
@@ -231,11 +238,117 @@ def _adj_cfg() -> Dict[str, Any]:
     ss = st.session_state
     split = lambda key: [x.strip() for x in str(ss[key]).split(",") if x.strip()]
     return {"injuries": ss["adj_inj"], "absorb_scale": float(ss["adj_absorb"]),
-            "manual_out": split("adj_out"), "manual_q": split("adj_q"), "manual_in": split("adj_in")}
+            "manual_out": split("adj_out"), "manual_q": split("adj_q"), "manual_in": split("adj_in"),
+            "vegas": bool(ss.get("adj_vegas", True)), "vegas_k": ss.get("vegas_k")}
+
+
+SNAP_NAME, VEGAS_K_NAME = "nfl_snapshots.csv", "nfl_vegas_k.json"
+
+
+def _read_csv_text(text: Optional[str]) -> pd.DataFrame:
+    """CSV text -> all-string frame (empty frame for no text)."""
+    return pd.read_csv(io.StringIO(text), dtype=str) if text and text.strip() else pd.DataFrame()
+
+
+def load_snapshots() -> pd.DataFrame:
+    """Snapshots from permanent storage if configured, else the local file."""
+    try:
+        return snaps_mod.normalize(_read_csv_text(cloud_store.load_text(SNAP_NAME, snaps_mod.SNAP_PATH)))
+    except Exception:
+        return snaps_mod.load()
+
+
+def save_snapshots(df: pd.DataFrame, force: bool = True) -> pd.DataFrame:
+    """Save snapshots; if permanent storage hands back a saved copy we never loaded, merge it in and save again."""
+    recovered = cloud_store.save_text(SNAP_NAME, df.to_csv(index=False), snaps_mod.SNAP_PATH, force)
+    if recovered:
+        try:
+            df = snaps_mod.upsert(snaps_mod.normalize(_read_csv_text(recovered)), df.to_dict("records"))
+            cloud_store.save_text(SNAP_NAME, df.to_csv(index=False), snaps_mod.SNAP_PATH, True)
+        except Exception:
+            pass
+    return df
+
+
+def load_bet_log() -> pd.DataFrame:
+    """Bet log from permanent storage if configured, else the local file."""
+    try:
+        return bl.normalize_log(_read_csv_text(cloud_store.load_text(bl.LOG_NAME, bl.LOG_NAME)))
+    except Exception:
+        return bl.normalize_log(pd.DataFrame())
+
+
+def save_bet_log(df: pd.DataFrame) -> pd.DataFrame:
+    """Save the bet log (merging in a saved copy that was never loaded, if there is one)."""
+    recovered = cloud_store.save_text(bl.LOG_NAME, df.to_csv(index=False), bl.LOG_NAME, True)
+    if recovered:
+        try:
+            df = bl.merge_logs(_read_csv_text(recovered), df)
+            cloud_store.save_text(bl.LOG_NAME, df.to_csv(index=False), bl.LOG_NAME, True)
+        except Exception:
+            pass
+    return df
+
+
+def load_vegas_k() -> Optional[Dict[str, float]]:
+    """Backtested Vegas weights, if any were applied."""
+    try:
+        text = cloud_store.load_text(VEGAS_K_NAME, VEGAS_K_NAME)
+        data = json.loads(text) if text and text.strip() else None
+        return {str(k): float(v) for k, v in data.items()} if isinstance(data, dict) and data else None
+    except Exception:
+        return None
+
+
+def save_vegas_k(k: Optional[Dict[str, float]]) -> None:
+    """Persist (or clear) the Vegas weights."""
+    cloud_store.save_text(VEGAS_K_NAME, json.dumps(k or {}), VEGAS_K_NAME, True)
+
+
+def _now_et_text() -> str:
+    """Current Eastern time as 'YYYY-MM-DD HH:MM' (UTC fallback if zoneinfo is unavailable)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def record_snapshot(res: Dict[str, Any], stat_category: str, line: float, over: float, under: float, game_label: str,
+                    snap_source: str) -> None:
+    """Save what the model believed for this prop (projection, probabilities, six-point) so it can be graded later.
+
+    Never raises: a snapshot problem must not break an evaluation. If nfl_snapshots.py isn't uploaded yet it is skipped
+    and main() shows a warning.
+    """
+    ss = st.session_state
+    try:
+        import nfl_snapshots as sn
+    except ImportError:
+        ss["snap_missing"] = True
+        return
+    try:
+        if "snapshots" not in ss:
+            ss["snapshots"] = load_snapshots()
+        row = sn.make_row(res, stat_category, float(line), float(over), float(under), snap_source, _now_et_text(),
+                          int(default_season()), (label_gameday(game_label) if game_label else "") or "")
+        ss["snapshots"] = save_snapshots(sn.upsert(ss["snapshots"], [row]), force=snap_source != "scan")
+    except Exception:
+        pass
 
 
 def run_evaluation(name: str, stat_category: str, line: float, over: float, under: float, source: str,
-                   opponent: Optional[str], game_label: str = "", strict: bool = False) -> Dict[str, Any]:
+                   opponent: Optional[str], game_label: str = "", strict: bool = False,
+                   snap_source: str = "evaluate") -> Dict[str, Any]:
+    """Run one evaluation and save it as a prediction snapshot (see record_snapshot). `source` is the projection model."""
+    res = _run_evaluation(name, stat_category, line, over, under, source, opponent, game_label, strict)
+    if "error" not in res:
+        record_snapshot(res, stat_category, line, over, under, game_label, snap_source)
+    return res
+
+
+def _run_evaluation(name: str, stat_category: str, line: float, over: float, under: float, source: str,
+                    opponent: Optional[str], game_label: str = "", strict: bool = False) -> Dict[str, Any]:
     """One evaluation, six-point score included (the engine does both, so Evaluate and the board scan always agree).
 
     With a game selected in Step 2 the six-point spread/weather lookup is pinned to that game's date. If AUTO picks an
@@ -276,7 +389,7 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
             progress.progress(k / max(n, 1), text=f"Scanning {name} ({k + 1}/{n})")
         try:
             res = run_evaluation(name, stat_category, r["Line"], r["Over"], r["Under"],
-                                 ss.get("input_source", SOURCES[0]), "AUTO", game_label, strict=True)
+                                 ss.get("input_source", SOURCES[0]), "AUTO", game_label, strict=True, snap_source="scan")
             if "error" in res:
                 out[name] = str(res["error"])[:70]
             elif res.get("six_point"):
@@ -287,6 +400,7 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
             out[name] = f"error: {str(e)[:60]}"
     if progress is not None:
         progress.progress(1.0, text="Scan complete")
+    cloud_store.flush()                      # the scan saved many snapshots in a row: send the last ones now
     return out
 
 
@@ -324,6 +438,7 @@ def render_live_panel() -> None:
                     st.caption(odds_credits.cache_note(cached_age))
                     ss["board"], ss["board_scan"], ss["board_token"] = board, None, uuid.uuid4().hex
                     ss["board_game_label"] = str(events.loc[game_idx, "label"])
+                    ss["board_stat"] = live_stat
                 except OddsApiError as exc:
                     st.error(odds_credits.friendly_error(exc))
         _credit_text, _credit_level = odds_credits.credits_status()
@@ -438,6 +553,10 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
     if m.get("rest") is not None and m.get("opp_rest") is not None:
         flag = lambda d: " (short week)" if d <= 6 else " (post-bye)" if d >= 13 else ""
         notes.append(f"Rest days: you {m['rest']}{flag(m['rest'])}, opponent {m['opp_rest']}{flag(m['opp_rest'])}. Informational only; no adjustment.")
+    env = res.get("vegas")
+    if env:
+        src = "backtested weight" if env.get("calibrated") else "default weight; calibrate in the Matchup Backtest tab"
+        notes.append(f"💰 {env['note']} (k = {env['k']:.2f}, {src}).")
     for n in notes:
         st.caption(n)
     with st.expander(f"All 32 defenses vs {m['pos']} ({stat_category})"):
@@ -618,6 +737,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(h[4], "SIM MEAN", f"{res['mean']:.2f}")
     for w in res["warnings"]:
         st.caption(f"⚠️ {w}")
+    render_log_form(res, stat_category, line_val)
     st.markdown("---")
     
     # Contextual Reality Check Card
@@ -644,6 +764,223 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
         yaxis=dict(showgrid=True, gridcolor="#e2e8f0", tickfont=dict(color="#0f172a")),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+def render_snapshots() -> None:
+    """Every evaluation and board scan, saved automatically; grade them against real results and see why picks missed."""
+    ss = st.session_state
+    try:
+        import nfl_snapshots as sn
+    except ImportError:
+        st.warning("nfl_snapshots.py is not uploaded to the app's GitHub repo yet.")
+        return
+    if "snapshots" not in ss:
+        ss["snapshots"] = load_snapshots()
+    snaps = ss["snapshots"]
+    st.caption("Saved automatically each time you press Evaluate or scan a board (latest snapshot per player, stat, line and game).")
+    shared_ui.render_storage_status(st)
+    a, b = st.columns(2)
+    if a.button("🏁 Grade finished games", key="grade_snaps"):
+        from sports_data import fetch_nfl_player_logs
+        graded, n, notes = sn.grade(snaps, fetch_nfl_player_logs)
+        ss["snapshots"] = save_snapshots(graded)
+        ss["snap_notes"] = notes[:5]
+        st.toast(f"Graded {n} snapshot(s)")
+        st.rerun()
+    b.download_button("⬇️ Download snapshots (CSV)", data=snaps.to_csv(index=False).encode("utf-8"),
+                      file_name="nfl_snapshots.csv", mime="text/csv", key="dl_snaps")
+    for note in ss.pop("snap_notes", []):
+        st.warning(note)
+    up = st.file_uploader("Import saved snapshots (CSV)", type="csv", key="snap_upload")
+    if up is not None:
+        uid = getattr(up, "file_id", f"{up.name}-{up.size}")
+        if ss.get("snap_upload_done") != uid:
+            try:
+                ss["snapshots"] = save_snapshots(sn.upsert(snaps, sn.normalize(pd.read_csv(up, dtype=str)).to_dict("records")))
+                ss["snap_upload_done"] = uid
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not read that file: {e}")
+    snaps = ss["snapshots"]
+    if snaps.empty:
+        st.info("No snapshots yet. Evaluate a prop or scan a board and they will appear here.")
+        return
+    tiers = sn.by_tier(snaps)
+    if not tiers.empty:
+        st.markdown("**Graded results by tier shown**")
+        st.dataframe(tiers.round(1), use_container_width=True, hide_index=True)
+    shared_ui.render_validation(st, snaps)
+    st.markdown("### 📋 Every saved prediction")
+    show = st.radio("Show", ["All", "Pending", "Graded", "Misses"], horizontal=True, key="snap_filter")
+    view = snaps
+    if show == "Pending":
+        view = snaps[snaps["STATUS"] == "Pending"]
+    elif show == "Graded":
+        view = snaps[snaps["STATUS"] == "Graded"]
+    elif show == "Misses":
+        view = snaps[snaps["SHOWN_RESULT"] == "Miss"]
+    cols = ["SEASON", "WEEK", "PLAYER", "STAT", "LINE", "SHOWN_SIDE", "TIER_SHOWN", "SIX_OVER", "SIX_UNDER", "MU", "ACTUAL", "Z",
+            "VOL_EXP", "VOL_ACT", "SHOWN_RESULT", "WHY", "P_OVER", "P_UNDER", "FAILED_OVER", "FAILED_UNDER", "OPPONENT", "SOURCE", "TS_ET"]
+    st.dataframe(view.sort_values(["SEASON", "WEEK", "PLAYER"], ascending=[False, False, True])[cols].round(2),
+                 use_container_width=True, hide_index=True)
+    st.caption("WHY is a heuristic: volume (attempts or receptions) 25% or more off his normal is a usage miss; a result more than 1 sd "
+               "(his last-10 spread) against the pick is an outlier; otherwise normal variance. Z = (actual - projection) / sd. "
+               "A player with no stats for a week that later weeks logged is voided (did not play).")
+
+
+def render_log_form(res: Dict[str, Any], stat_category: str, line_val: float) -> None:
+    """'Log this bet' under an evaluation: saves the side you took with the model and market numbers at that moment."""
+    ss = st.session_state
+    if "sides" not in res:
+        return
+    st.markdown("### 📝 Log this bet")
+    c1, c2, c3 = st.columns(3)
+    default_side = 0 if str(res.get("best_side", "")).startswith("Over") else 1
+    side = c1.selectbox("Side", ["Over", "Under"], index=default_side, key=f"log_side_{res.get('player_name')}_{stat_category}_{line_val}")
+    stake = c2.number_input("Stake (units)", min_value=0.01, value=1.0, step=0.25, key="log_stake")
+    c3.write("")
+    if c3.button("Log bet", key="log_btn"):
+        row = bl.make_bet_row(res, stat_category, float(line_val), side if side in ("Over", "Under") else "Over", float(stake or 1.0), int(default_season()))
+        ss["bet_log"], added = bl.add_bet(ss.get("bet_log", bl.normalize_log(pd.DataFrame())), row)
+        if added:
+            ss["bet_log"] = save_bet_log(ss["bet_log"])
+            ss["editor_ver"] = ss.get("editor_ver", 0) + 1
+            st.toast(f"Logged {row['SIDE']} {float(line_val):g} — {res['player_name']}")
+        else:
+            st.warning("That exact bet (player, stat, side, line, game) is already in your log.")
+
+
+def _fmt(x: Optional[float], spec: str = ".1f", suffix: str = "") -> str:
+    return "—" if x is None or not np.isfinite(x) else f"{x:{spec}}{suffix}"
+
+
+def render_bet_log() -> None:
+    """Bets you placed: closing lines, auto-grading by week, units, ROI, closing-line value and calibration."""
+    ss = st.session_state
+    if "bet_log" not in ss:
+        ss["bet_log"] = load_bet_log()
+    ss.setdefault("editor_ver", 0)
+    shared_ui.render_storage_status(st)
+    a, b, c = st.columns(3)
+    if a.button("🏁 Auto-grade finished games", key="grade_btn"):
+        from sports_data import fetch_nfl_player_logs
+        graded, n, notes = bl.auto_grade(ss["bet_log"], fetch_nfl_player_logs)
+        ss["bet_log"] = save_bet_log(graded)
+        ss["editor_ver"] += 1
+        ss["grade_notes"] = notes[:5]
+        st.toast(f"Graded {n} bet(s)")
+        st.rerun()
+    board = ss.get("board")
+    if b.button("📸 Use current board as closing lines", key="close_btn"):
+        if board is None or board.empty or not ss.get("board_stat"):
+            st.warning("Fetch a prop board first (Evaluate tab, Step 3), ideally right before kickoff.")
+        else:
+            updated, n = bl.apply_board_as_closing(ss["bet_log"], summarize_board(board), ss["board_stat"])
+            ss["bet_log"] = save_bet_log(updated)
+            ss["editor_ver"] += 1
+            st.toast(f"Closing lines applied to {n} pending bet(s) ({ss['board_stat']} market)")
+            st.rerun()
+    c.download_button("⬇️ Download log (CSV)", data=ss["bet_log"].to_csv(index=False).encode("utf-8"),
+                      file_name=bl.LOG_NAME, mime="text/csv", key="dl_log")
+    for note in ss.pop("grade_notes", []):
+        st.warning(note)
+    up = st.file_uploader("Import a saved bet log (CSV)", type="csv", key="log_upload")
+    if up is not None:
+        uid = getattr(up, "file_id", f"{up.name}-{up.size}")
+        if ss.get("_up_id") != uid:
+            try:
+                ss["bet_log"] = save_bet_log(bl.merge_logs(ss["bet_log"], pd.read_csv(up, dtype=str)))
+                ss["_up_id"] = uid
+                ss["editor_ver"] += 1
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not import that file: {e}")
+    log: pd.DataFrame = ss["bet_log"]
+    if log.empty:
+        st.info("No bets logged yet. Evaluate a prop, then use “Log this bet” under the results.")
+        return
+    cols = [c_ for c_ in bl.LOG_COLS if c_ not in ("ID", "LAST_WEEK_SEEN")] + ["LAST_WEEK_SEEN", "ID"]
+    key = f"bet_editor_{ss['editor_ver']}"
+    fmt = lambda label: st.column_config.NumberColumn(label, format="%.1f")
+    edited = st.data_editor(
+        log[cols], key=key, num_rows="dynamic", hide_index=True, use_container_width=True,
+        disabled=[c_ for c_ in cols if c_ not in bl.EDITABLE_COLS],
+        column_config={
+            "ID": None, "TS": None, "LAST_WEEK_SEEN": None,
+            "RESULT": st.column_config.SelectboxColumn("RESULT", options=bl.RESULT_OPTIONS, required=True),
+            "P_MODEL": fmt("P_MODEL %"), "P_MARKET": fmt("P_MKT %"), "EDGE_PP": fmt("EDGE pp"), "EV_PCT": fmt("EV %"),
+            "LINE_MOVE": fmt("LINE MOVE"), "CLV_PP": fmt("CLV pp"), "PROFIT": st.column_config.NumberColumn("PROFIT (u)", format="%.2f"),
+        },
+    )
+    state = ss.get(key) or {}
+    if isinstance(edited, pd.DataFrame) and (state.get("edited_rows") or state.get("added_rows") or state.get("deleted_rows")):
+        ss["bet_log"] = save_bet_log(bl.normalize_log(edited))
+        ss["editor_ver"] += 1
+        st.rerun()
+    stats, by_stat, calib = bl.summarize_log(ss["bet_log"])
+    st.markdown("### 📈 Performance")
+    m = st.columns(6)
+    _metric(m[0], "BETS / GRADED", f"{int(stats['bets'])} / {int(stats['graded'])}")
+    _metric(m[1], "WIN %", _fmt(stats["win_pct"], ".1f", "%"))
+    _metric(m[2], "UNITS", _fmt(stats["units"], "+.2f"), _tone(stats["units"]) if np.isfinite(stats["units"]) else "neutral")
+    _metric(m[3], "ROI", _fmt(stats["roi"], "+.1f", "%"), _tone(stats["roi"]) if np.isfinite(stats["roi"]) else "neutral")
+    _metric(m[4], "AVG CLV", _fmt(stats["avg_clv"], "+.2f", " pp"), _tone(stats["avg_clv"]) if np.isfinite(stats["avg_clv"]) else "neutral")
+    _metric(m[5], "+CLV RATE", _fmt(stats["pos_clv"], ".0f", "%"))
+    st.caption(
+        f"CLV is measured on {int(stats['n_clv'])} bet(s) with closing odds at the same line. "
+        f"Brier (lower is better): model {_fmt(stats['brier_model'], '.4f')} vs market {_fmt(stats['brier_market'], '.4f')}. "
+        "Treat everything as noise until you have 50+ graded bets; CLV converges much faster than win/loss. "
+        "To record closing lines, fetch the board right before kickoff and press the closing-lines button, or type them into the table."
+    )
+    st.markdown("**By stat category**")
+    st.dataframe(by_stat, use_container_width=True, hide_index=True)
+    st.markdown("**Calibration (graded bets)**")
+    st.dataframe(calib, use_container_width=True, hide_index=True)
+
+
+def render_vegas_backtest() -> None:
+    """Calibrate how much of the market's implied team points should reach each stat (closing lines, no look-ahead)."""
+    ss = st.session_state
+    st.markdown("---")
+    st.subheader("Vegas implied points")
+    st.markdown(
+        "Estimates **k** in `stat ÷ player's season average = 1 + k × (implied team points ÷ team's usual points − 1)`, using each "
+        "game's closing total and spread, a points baseline built only from earlier games, and the opponent index in the same "
+        "regression, so k is what Vegas adds **on top of** the matchup factor. Results are shrunk toward the default before use."
+    )
+    c1, c2 = st.columns(2)
+    n_seasons = c1.slider("Seasons to backtest", 1, 4, 3, key="vbt_seasons")
+    c2.write("")
+    if c2.button("🔬 Run Vegas backtest", key="run_vbt"):
+        cur = default_season()
+        with st.spinner("Loading nflverse seasons and closing lines…"):
+            try:
+                n = int(n_seasons or 3)
+                ss["vbt_table"] = nfl_vegas.run_backtests(load_weekly(cur, back=n), nfl_vegas.load_lines(cur, n), cur - n + 1)
+            except Exception as e:
+                ss["vbt_table"] = None
+                st.error(f"Backtest failed: {e}")
+    table = ss.get("vbt_table")
+    if table is not None and not table.empty:
+        st.dataframe(table.round(3), use_container_width=True, hide_index=True)
+        st.caption("K_V is the raw estimate, K_EFF is what the model will use. SIGNIFICANT = |K_V| ≥ 2 × SE_V. "
+                   "An estimated points baseline dilutes K_V somewhat, so it tends to read low rather than high.")
+        a, b = st.columns(2)
+        if a.button("✅ Apply to model", key="apply_vbt"):
+            ss["vegas_k"] = {r.STAT: float(r.K_EFF) for r in table.itertuples()}
+            save_vegas_k(ss["vegas_k"])
+            st.toast("Calibrated Vegas weights applied")
+        if b.button("↩️ Reset to defaults", key="reset_vbt"):
+            ss["vegas_k"] = None
+            save_vegas_k(None)
+            st.toast("Back to default Vegas weights")
+    elif table is not None:
+        st.warning("Not enough player-games for any stat. Try more seasons.")
+    active = ss.get("vegas_k")
+    st.markdown("**Active Vegas weights**" + (" (backtested)" if active else " (default assumptions)"))
+    st.dataframe(pd.DataFrame({"STAT": list(nfl_vegas.DEFAULT_K),
+                               "k": [round((active or nfl_vegas.DEFAULT_K).get(s_, nfl_vegas.DEFAULT_K[s_]), 3) for s_ in nfl_vegas.DEFAULT_K]}),
+                 use_container_width=True, hide_index=True)
 
 
 def render_matchup_backtest() -> None:
@@ -705,14 +1042,23 @@ def main() -> None:
     )
     ss = st.session_state
     def_player, def_line = DEFAULTS
+    cloud_store.configure(_secret("GITHUB_GIST_TOKEN"))
     if "matchup_k" not in ss:
         ss["matchup_k"] = load_k_file()
+    if "vegas_k" not in ss:
+        ss["vegas_k"] = load_vegas_k()
+    if "bet_log" not in ss:
+        ss["bet_log"] = load_bet_log()
+    ss.setdefault("editor_ver", 0)
     for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
                          ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
-                         ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", "")):
+                         ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", ""),
+                         ("adj_vegas", True)):
         ss.setdefault(key, default)
 
-    tab_eval, tab_bt = st.tabs(["⚡ Evaluate", "🔬 Matchup Backtest"])
+    if ss.get("snap_missing"):
+        st.warning("nfl_snapshots.py is not uploaded to the app's GitHub repo, so predictions are NOT being saved. Upload it (it is in the zip).")
+    tab_eval, tab_log, tab_snap, tab_parlay, tab_bt = st.tabs(["⚡ Evaluate", "📒 Bet Log", "📸 Snapshots", "🎟️ Parlay", "🔬 Matchup Backtest"])
     with tab_eval:
         render_live_scoreboard()
         render_live_panel()
@@ -723,6 +1069,7 @@ def main() -> None:
             st.text_input("Teammates QUESTIONABLE (counted as 50%)", key="adj_q")
             st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
             st.caption("Applies when you press Evaluate. Check the team's report close to kickoff: the feed can lag.")
+            st.checkbox("Use Vegas implied team points (total and spread) in the projection", key="adj_vegas")
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
@@ -759,12 +1106,23 @@ def main() -> None:
                 "- **Final assessment (6-point check)**: baby line, AI edge, implied chance, defensive rank (season + last 4 games), injury flags, game script (spread under 10, no bad weather). "
                 "6/6 = SHARP, 5/6 = LEAN; checks that can't be verified count as failed. Thresholds are in nfl_six_point.py.\n"
                 "- **Kelly**: ¼ Kelly capped at 5% of bankroll; 0 when EV ≤ 0.\n"
+                "- **Vegas implied points**: implied team points = total ÷ 2 ± spread ÷ 2, compared with the team's usual points (earlier games this season, shrunk to last season). "
+                "Multiplier = 1 + k × (ratio − 1), capped ±8%, applied on top of matchup and usage. k is a default assumption until you run the Vegas backtest.\n"
                 "- **Injuries & usage**: injured teammates' target share (receiving) or carry share (rushing) is redistributed to the others in proportion to their own share "
                 "(same-position teammates weighted 1.5x), net of what the player's recent games already reflect, so a returning teammate pulls usage back down. "
                 "Passing props lose a little efficiency when top targets are out, and receivers lose a little when the QB is out. The projection is shifted and the verdict re-priced; absorption rates are assumptions."
             )
+    with tab_log:
+        render_bet_log()
+    with tab_snap:
+        render_snapshots()
+    with tab_parlay:
+        if "snapshots" not in ss:
+            ss["snapshots"] = load_snapshots()
+        shared_ui.render_parlay(st, ss["snapshots"])
     with tab_bt:
         render_matchup_backtest()
+        render_vegas_backtest()
 
 
 if __name__ == "__main__":
