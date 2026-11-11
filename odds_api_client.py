@@ -1,381 +1,169 @@
-"""Six-point prop criteria for the NFL Prop Evaluator.
-
-Score = number of passed checks for a side:  6/6 -> SHARP,  5/6 -> LEAN,  <= 4/6 -> PASS.
-A check that cannot be verified counts as NOT passed (and is shown as unverified).
-
-    1. Baby line      line >= MIN_LINE[stat]
-    2. AI edge        side-direction margin (proj - line for Over, line - proj for Under)
-                      >= max(MIN_EDGE_ABS[stat], MIN_EDGE_PCT * line)
-    3. Implied chance devigged market probability of the side > IMPLIED_MIN
-    4. Defensive rank season-long AND last-RECENT_GAMES opponent ranks (vs the player's position
-                      group, 1 = softest) both support the side: Over needs rank <= RANK_CUTOFF,
-                      Under needs rank > n_teams - RANK_CUTOFF
-    5. Injury         player not flagged, no flagged skill teammate, QB1 not flagged (receiving props)
-    6. Game script    |spread| < BLOWOUT_SPREAD and no bad weather at an outdoor stadium
-                      (wind, rain, snow or extreme cold in the 3 hours from kickoff)
-"""
-
+"""Odds API client for fetching live DraftKings player prop markets."""
 from __future__ import annotations
 
-import re
-import time
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
-
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+import requests
 
-import six_point_core as core
-from nfl_matchups import _defense_games
-from six_point_core import (  # noqa: F401  (re-exported: the app and tests import these from here)
-    SHARP_SCORE, LEAN_SCORE, TAG_COL, Check, SixPointResult, add_six_point_column, style_tags, tag_text, tier_for,
-)
+API_BASE = "https://api.the-odds-api.com/v4/sports"
 
-# --- Thresholds (edit freely) -------------------------------------------------
-MIN_LINE: Dict[str, float] = {
-    "PASSING YARDS": 175.5, "PASS COMPLETIONS": 14.5, "PASS ATTEMPTS": 24.5, "PASSING TDS": 1.5,
-    "RUSHING YARDS": 35.5, "RUSHING ATTEMPTS": 8.5, "RECEIVING YARDS": 35.5, "RECEPTIONS": 3.5,
-    "INTERCEPTIONS": 0.5,
+SPORT_KEYS: Dict[str, str] = {
+    "NFL": "americanfootball_nfl",
+    "NBA": "basketball_nba",
 }
-MIN_EDGE_ABS: Dict[str, float] = {
-    "PASSING YARDS": 12.0, "PASS COMPLETIONS": 1.5, "PASS ATTEMPTS": 2.0, "PASSING TDS": 0.25,
-    "RUSHING YARDS": 6.0, "RUSHING ATTEMPTS": 1.5, "RECEIVING YARDS": 6.0, "RECEPTIONS": 0.75,
-    "INTERCEPTIONS": 0.15,
-}
-MIN_EDGE_PCT = 0.06
-IMPLIED_MIN = 0.50
-RANK_CUTOFF = 16            # half of a 32-team league
-RECENT_GAMES = 4            # "recent" = each defense's last 4 games this season
-RECENT_MIN_GAMES = 2        # fewer than this and the recent rank is unverified
-BLOWOUT_SPREAD = 10.0
-WIND_MPH, GUST_MPH, PRECIP_MM, SNOW_CM, COLD_F = 15.0, 25.0, 3.0, 0.5, 20.0
-WEATHER_HOURS = 3
-NFL_SPEC = core.SportSpec("NFL", MIN_LINE, MIN_EDGE_ABS, RANK_CUTOFF, RECENT_GAMES, MIN_EDGE_PCT, IMPLIED_MIN, BLOWOUT_SPREAD)
 
-ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
-# ESPN code -> nflverse code (applied to both sides before comparing).
-ABBR_CANON: Dict[str, str] = {"WSH": "WAS", "LAR": "LA", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LA"}
-# Home stadium (lat, lon, roof). roof: outdoor | dome | retractable | canopy. Approximate coordinates.
-STADIUMS: Dict[str, Tuple[float, float, str]] = {
-    "ARI": (33.5276, -112.2626, "retractable"), "ATL": (33.7554, -84.4010, "dome"),
-    "BAL": (39.2780, -76.6227, "outdoor"), "BUF": (42.7738, -78.7870, "outdoor"),
-    "CAR": (35.2258, -80.8528, "outdoor"), "CHI": (41.8623, -87.6167, "outdoor"),
-    "CIN": (39.0955, -84.5161, "outdoor"), "CLE": (41.5061, -81.6995, "outdoor"),
-    "DAL": (32.7473, -97.0945, "retractable"), "DEN": (39.7439, -105.0201, "outdoor"),
-    "DET": (42.3400, -83.0456, "dome"), "GB": (44.5013, -88.0622, "outdoor"),
-    "HOU": (29.6847, -95.4107, "retractable"), "IND": (39.7601, -86.1639, "retractable"),
-    "JAX": (30.3239, -81.6373, "outdoor"), "KC": (39.0489, -94.4839, "outdoor"),
-    "LA": (33.9535, -118.3392, "canopy"), "LAC": (33.9535, -118.3392, "canopy"),
-    "LV": (36.0909, -115.1833, "dome"), "MIA": (25.9580, -80.2389, "outdoor"),
-    "MIN": (44.9735, -93.2575, "dome"), "NE": (42.0909, -71.2643, "outdoor"),
-    "NO": (29.9511, -90.0812, "dome"), "NYG": (40.8135, -74.0745, "outdoor"),
-    "NYJ": (40.8135, -74.0745, "outdoor"), "PHI": (39.9008, -75.1675, "outdoor"),
-    "PIT": (40.4468, -80.0158, "outdoor"), "SEA": (47.5952, -122.3316, "outdoor"),
-    "SF": (37.4030, -121.9700, "outdoor"), "TB": (27.9759, -82.5033, "outdoor"),
-    "TEN": (36.1665, -86.7713, "outdoor"), "WAS": (38.9076, -76.8645, "outdoor"),
+MARKETS: Dict[str, Dict[str, str]] = {
+    "NFL": {
+        "Passing Yards": "player_pass_yds",
+        "Pass Completions": "player_pass_completions",
+        "Pass Attempts": "player_pass_attempts",
+        "Passing TDs": "player_pass_tds",
+        "Interceptions": "player_pass_interceptions",
+        "Rushing Yards": "player_rush_yds",
+        "Rushing Attempts": "player_rush_attempts",
+        "Receiving Yards": "player_reception_yds",
+        "Receptions": "player_receptions",
+        "Kicking Points": "player_kicking_points",
+        "Field Goals Made": "player_field_goals",
+        "Anytime Touchdown Scorer": "player_anytime_td",
+    }
 }
 
 
-def canon(abbr: Any) -> str:
-    """Upper-case team code mapped to the nflverse convention."""
-    a = str(abbr or "").upper().strip()
-    return ABBR_CANON.get(a, a)
+class OddsApiError(Exception):
+    """Custom exception for Odds API request issues."""
+    pass
 
 
-@dataclass(frozen=True)
-class GameInfo:
-    """What the ESPN scoreboard says about one game."""
-
-    home: str
-    away: str
-    kickoff_iso: str
-    spread: Optional[float]      # absolute points, None if no line posted
-    neutral: bool
-    indoor: Optional[bool]
+def _resolve_sport_key(sport: str) -> str:
+    s = str(sport or "").upper().strip()
+    return SPORT_KEYS.get(s, s.lower())
 
 
-@dataclass(frozen=True)
-class Weather:
-    """Kickoff-window weather verdict for the game script check."""
-
-    verified: bool
-    bad: bool
-    detail: str
-
-
-# --- Individual checks (thin wrappers over the shared rules in six_point_core.py) -----------
-def check_line(stat: str, line: float) -> Check:
-    """1. Baby line."""
-    return core.check_line(NFL_SPEC, stat, line)
-
-
-def check_edge(side: str, stat: str, line: float, proj: float) -> Check:
-    """2. AI edge."""
-    return core.check_edge(NFL_SPEC, side, stat, line, proj)
-
-
-def check_implied(side: str, p_market: float) -> Check:
-    """3. Implied chance."""
-    return core.check_implied(NFL_SPEC, side, p_market)
-
-
-def rank_supports(side: str, rank: int, n_teams: int, cutoff: int = RANK_CUTOFF) -> bool:
-    """Rank 1 = softest defense. Over wants a soft defense, Under a tough one."""
-    return core.rank_supports(side, rank, n_teams, cutoff)
-
-
-def check_defense(side: str, season_rank: Optional[int], season_n: Optional[int],
-                  recent_rank: Optional[int], recent_n: Optional[int], pos: str = "") -> Check:
-    """4. Defensive rank: season-long and recent ranks (vs this position group) both support the side."""
-    return core.check_defense(NFL_SPEC, side, season_rank, season_n, recent_rank, recent_n, f"Vs {pos or 'position'}s: ",
-                              "pick an opponent (or Auto) and make sure the weekly data loaded")
-
-
-def flagged_players(inj: Mapping[str, Any]) -> List[str]:
-    """Everyone with an active flag: the player, listed skill teammates, QB1 (receiving props)."""
-    out: List[str] = []
-    if inj.get("self_status"):
-        out.append(f"the player ({inj['self_status']})")
-    out += [f"{x['name']} ({x['status']})" for x in inj.get("listed", []) if x.get("p_out", 0.0) > 0]
-    if inj.get("qb_flag"):
-        out.append(str(inj["qb_flag"]))
-    return out
-
-
-def check_injury(inj: Optional[Mapping[str, Any]]) -> Check:
-    """5. Injury: nobody relevant carries an active flag."""
-    if not inj or not inj.get("checked") or not inj.get("feed_ok", False):
-        return core.check_injury(None, "injury feed unavailable, injury adjustment turned off, or the player has no regular share")
-    return core.check_injury(flagged_players(inj))
-
-
-def check_game_script(spread: Optional[float], weather: Optional[Weather]) -> Check:
-    """6. Game script: no blowout risk and no bad weather."""
-    if weather is None:
-        return core.check_game_script(NFL_SPEC, spread, False, False, "weather unavailable")
-    return core.check_game_script(NFL_SPEC, spread, weather.verified, weather.bad, weather.detail)
-
-
-def score_prop(side: str, stat: str, line: float, proj: float, p_market: float,
-               season_rank: Optional[int], season_n: Optional[int], recent_rank: Optional[int],
-               recent_n: Optional[int], pos: str, inj: Optional[Mapping[str, Any]],
-               spread: Optional[float], weather: Optional[Weather]) -> SixPointResult:
-    """Run all six checks for one side and return the score and tier."""
-    return core.result_from_checks(side, (
-        check_line(stat, line), check_edge(side, stat, line, proj), check_implied(side, p_market),
-        check_defense(side, season_rank, season_n, recent_rank, recent_n, pos), check_injury(inj),
-        check_game_script(spread, weather),
-    ))
-
-
-# --- Data helpers (pure) --------------------------------------------------------
-def recent_defense_rank(weekly: pd.DataFrame, stat: str, pos: str, season: int, opponent: str,
-                        n_recent: int = RECENT_GAMES, min_games: int = RECENT_MIN_GAMES
-                        ) -> Tuple[Optional[int], Optional[int]]:
-    """Opponent's rank (1 = softest) by what it allowed `pos` in its last `n_recent` games this season.
-
-    Returns (rank, n_teams) or (None, None) when the opponent has too few games.
-    """
-    g = _defense_games(weekly, stat, pos)
-    g = g[g["SEASON"] == season].sort_values(["OPP", "WEEK"])
-    g = g[g.groupby("OPP").cumcount(ascending=False) < n_recent]
-    agg = g.groupby("OPP")["V"].agg(["mean", "size"])
-    agg = agg[agg["size"] >= min_games]
-    opp = canon(opponent)
-    if opp not in agg.index:
-        return None, None
-    rank = agg["mean"].rank(ascending=False, method="min")
-    return int(rank[opp]), int(len(agg))
-
-
-_spread_from_odds = core.spread_from_espn_odds      # shared with the NBA app (one parser for ESPN's betting line)
-
-
-def parse_scoreboard_game(payload: Mapping[str, Any], team: str, opponent: Optional[str] = None) -> Optional[GameInfo]:
-    """Find `team`'s game (vs `opponent` if given) in an ESPN scoreboard payload."""
-    t, o = canon(team), canon(opponent) if opponent else None
-    for ev in payload.get("events", []):
-        comp = (ev.get("competitions") or [{}])[0]
-        teams = {c.get("homeAway"): canon((c.get("team") or {}).get("abbreviation")) for c in comp.get("competitors", [])}
-        if t not in teams.values() or (o and o not in teams.values()):
-            continue
-        return GameInfo(home=teams.get("home", ""), away=teams.get("away", ""),
-                        kickoff_iso=str(comp.get("date") or ev.get("date") or ""),
-                        spread=_spread_from_odds(comp.get("odds")), neutral=bool(comp.get("neutralSite")),
-                        indoor=(comp.get("venue") or {}).get("indoor"))
-    return None
-
-
-def summarize_forecast(payload: Mapping[str, Any], kickoff_iso: str, hours: int = WEATHER_HOURS) -> Optional[Dict[str, float]]:
-    """Worst conditions in the `hours` hours from kickoff, from an Open-Meteo hourly payload (UTC)."""
-    h = payload.get("hourly") or {}
-    if not h.get("time"):
-        return None
-    start = pd.Timestamp(kickoff_iso).tz_convert("UTC").floor("h")
-    times = pd.to_datetime(pd.Series(h["time"]), utc=True)
-    mask = ((times >= start) & (times < start + pd.Timedelta(hours=hours))).to_numpy()
-    if not mask.any():
-        return None
-    col = lambda k: np.nan_to_num(np.asarray(h.get(k) or [0.0] * len(times), dtype=float)[mask])
-    return {"wind": float(col("wind_speed_10m").max()), "gust": float(col("wind_gusts_10m").max()),
-            "precip": float(col("precipitation").sum()), "snow": float(col("snowfall").sum()),
-            "temp": float(col("temperature_2m").min())}
-
-
-def judge_weather(w: Mapping[str, float]) -> Weather:
-    """Apply the thresholds to a forecast summary."""
-    problems = [txt for bad, txt in (
-        (w["wind"] >= WIND_MPH or w["gust"] >= GUST_MPH, f"wind {w['wind']:.0f} mph (gusts {w['gust']:.0f})"),
-        (w["precip"] >= PRECIP_MM, f"rain {w['precip']:.1f} mm"),
-        (w["snow"] >= SNOW_CM, f"snow {w['snow']:.1f} cm"),
-        (w["temp"] <= COLD_F, f"{w['temp']:.0f}°F"),
-    ) if bad]
-    base = f"forecast wind {w['wind']:.0f} mph, {w['temp']:.0f}°F, precip {w['precip']:.1f} mm"
-    return Weather(True, bool(problems), ("bad weather: " + ", ".join(problems)) if problems else "weather " + base)
-
-
-def game_weather(info: Optional[GameInfo], fetch_forecast: Callable[[float, float], Mapping[str, Any]]) -> Weather:
-    """Weather verdict for a game: indoor stadiums pass; outdoor ones use the forecast."""
-    if info is None:
-        return Weather(False, False, "game not found on the ESPN scoreboard, weather not checked")
-    if info.neutral:
-        return Weather(False, False, "neutral-site game, weather not checked")
-    lat_lon_roof = STADIUMS.get(canon(info.home))
-    if lat_lon_roof is None:
-        return Weather(False, False, f"unknown stadium for {info.home}, weather not checked")
-    lat, lon, roof = lat_lon_roof
-    if roof != "outdoor" or info.indoor:
-        return Weather(True, False, f"{roof if roof != 'outdoor' else 'indoor'} stadium, no weather risk")
+def et_label(iso: str) -> str:
+    """Odds API UTC timestamp -> US Eastern label like '2026-11-09 8:20 PM EST' (EDT in summer); the raw text if unparseable."""
     try:
-        summary = summarize_forecast(fetch_forecast(lat, lon), info.kickoff_iso)
-    except Exception as e:
-        return Weather(False, False, f"forecast unavailable ({e})")
-    if summary is None:
-        return Weather(False, False, "no forecast hours for kickoff (beyond the 16-day window?)")
-    return judge_weather(summary)
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(ZoneInfo("America/New_York"))
+        return f"{dt:%Y-%m-%d} {int(dt.strftime('%I'))}:{dt:%M} {dt:%p} {dt:%Z}"
+    except Exception:
+        return str(iso)
 
 
-# --- Network fetchers (wrapped with st.cache_data in the app) --------------------
-def fetch_game_info(team: str, opponent: Optional[str], gameday: Optional[str]) -> Optional[GameInfo]:
-    """ESPN scoreboard lookup: gameday +/- 1 day if known (time zones shift dates), else the next 14 days."""
-    import requests
-    if gameday:
-        day = pd.Timestamp(gameday)
-        start, end = day - pd.Timedelta(days=1), day + pd.Timedelta(days=1)
-    else:
-        start = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
-        end = start + pd.Timedelta(days=14)
-    resp = requests.get(ESPN_SCOREBOARD, params={"dates": f"{start:%Y%m%d}-{end:%Y%m%d}", "limit": 100}, timeout=8)
-    resp.raise_for_status()
-    return parse_scoreboard_game(resp.json(), team, opponent)
+def list_events(sport: str, api_key: str) -> Tuple[pd.DataFrame, int]:
+    sport_key = _resolve_sport_key(sport)
+    url = f"{API_BASE}/{sport_key}/events"
+    params = {"apiKey": api_key}
+    resp = requests.get(url, params=params, timeout=10)
+    if resp.status_code != 200:
+        raise OddsApiError(f"API Error ({resp.status_code}): {resp.text}")
+    
+    data = resp.json()
+    remaining_requests = int(resp.headers.get("x-requests-remaining", 0))
+    
+    rows = []
+    for ev in data:
+        rows.append({
+            "id": ev["id"],
+            "commence_time": ev["commence_time"],
+            "home_team": ev["home_team"],
+            "away_team": ev["away_team"],
+            "label": f"{ev['away_team']} @ {ev['home_team']} ({et_label(ev['commence_time'])})"
+        })
+    return pd.DataFrame(rows), remaining_requests
 
 
-def fetch_forecast(lat: float, lon: float) -> Dict[str, Any]:
-    """Open-Meteo hourly forecast (UTC, mph, mm, °F) for the next 16 days."""
-    import requests
-    params = {"latitude": lat, "longitude": lon, "forecast_days": 16, "timezone": "UTC",
-              "hourly": "temperature_2m,precipitation,snowfall,wind_speed_10m,wind_gusts_10m",
-              "temperature_unit": "fahrenheit", "wind_speed_unit": "mph", "precipitation_unit": "mm"}
-    resp = requests.get(OPEN_METEO, params=params, timeout=8)
-    resp.raise_for_status()
-    return resp.json()
+def fetch_prop_board(
+    sport: str,
+    event_id: str,
+    market_label: str,
+    bookmakers: Tuple[str, ...],
+    api_key: str
+) -> Tuple[pd.DataFrame, int]:
+    sport_map = MARKETS.get(sport.upper(), MARKETS.get("NFL", {}))
+    market_key = sport_map.get(market_label)
+    if not market_key:
+        raise OddsApiError(f"Market label '{market_label}' is not supported for live API fetching.")
+
+    sport_key = _resolve_sport_key(sport)
+    url = f"{API_BASE}/{sport_key}/events/{event_id}/odds"
+    params = {
+        "apiKey": api_key,
+        "regions": "us",
+        "markets": market_key,
+        "bookmakers": ",".join(bookmakers),
+        "oddsFormat": "american",
+    }
+    resp = requests.get(url, params=params, timeout=10)
+    if resp.status_code != 200:
+        raise OddsApiError(f"API Error ({resp.status_code}): {resp.text}")
+
+    remaining_requests = int(resp.headers.get("x-requests-remaining", 0))
+    data = resp.json()
+    
+    rows = []
+    for bmark in data.get("bookmakers", []):
+        book_title = bmark.get("title", bmark.get("key"))
+        for mkt in bmark.get("markets", []):
+            for outcome in mkt.get("outcomes", []):
+                rows.append({
+                    "Bookmaker": book_title,
+                    "Player": outcome.get("description", outcome.get("name")),
+                    "Side": outcome.get("name"),
+                    "Line": outcome.get("point", np.nan),
+                    "Odds": outcome.get("price"),
+                })
+    return pd.DataFrame(rows), remaining_requests
 
 
-# --- Small TTL cache (no Streamlit dependency, so the engine can use it from anywhere) ------
-_CACHE: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
+def _synthetic_under(over_odds: float) -> float:
+    """Generate fair synthetic opposite Under odds if the sportsbook only lists Over."""
+    try:
+        o = float(over_odds)
+        p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
+        p_under = max(1.0 - p_over, 0.05)
+        p_juiced = min(p_under * 1.05, 0.95)
+        if p_juiced >= 0.5:
+            return -round((p_juiced / (1.0 - p_juiced)) * 100.0)
+        return round(((1.0 - p_juiced) / p_juiced) * 100.0)
+    except Exception:
+        return -110.0
 
 
-def _cached(ttl: float, fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Memoize successful calls of `fn` for `ttl` seconds (exceptions are never cached)."""
-    def wrapper(*args: Any) -> Any:
-        key = (fn.__name__,) + args
-        hit = _CACHE.get(key)
-        if hit and time.time() - hit[0] < ttl:
-            return hit[1]
-        val = fn(*args)
-        _CACHE[key] = (time.time(), val)
-        return val
-    wrapper.__name__ = f"cached_{fn.__name__}"
-    return wrapper
+def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
+    """Pivot raw outcomes table into a single row per player with Line, Over, and Under columns."""
+    if board.empty:
+        return pd.DataFrame(columns=["Player", "Line", "Over", "Under"])
+    
+    pivoted = []
+    for player, grp in board.groupby("Player"):
+        line_series = grp["Line"].dropna()
+        line = line_series.iloc[0] if not line_series.empty else 0.5
+        
+        over_odds = grp[grp["Side"].isin(["Over", "Yes"])]["Odds"].values
+        under_odds = grp[grp["Side"].isin(["Under", "No"])]["Odds"].values
+        
+        over_val = over_odds[0] if len(over_odds) > 0 else np.nan
+        under_val = under_odds[0] if len(under_odds) > 0 else np.nan
+        
+        if pd.notna(over_val) and pd.isna(under_val):
+            under_val = _synthetic_under(over_val)
+        
+        pivoted.append({
+            "Player": player,
+            "Line": float(line) if pd.notna(line) else 0.5,
+            "Over": float(over_val) if pd.notna(over_val) else np.nan,
+            "Under": float(under_val) if pd.notna(under_val) else np.nan,
+        })
+    return pd.DataFrame(pivoted)
 
 
-cached_game_info = _cached(300, fetch_game_info)
-cached_forecast = _cached(1800, fetch_forecast)
-
-
-# --- Orchestration -------------------------------------------------------------
-def assess(res: Mapping[str, Any], stat_category: str, line: float, weekly: Optional[pd.DataFrame], season: int,
-           get_game: Optional[Callable[[str, Optional[str], Optional[str]], Optional[GameInfo]]] = None,
-           get_forecast: Optional[Callable[[float, float], Mapping[str, Any]]] = None,
-           gameday: Optional[str] = None) -> Dict[str, Any]:
-    """Six-point assessment for BOTH sides of an evaluate_prop result.
-
-    The tag follows the better-scoring side (ties go to the model's EV side), so a 5/6 or 6/6 on either
-    side is never hidden. Returns {"Over": {...}, "Under": {...}, "best": side, "ev_side": side}.
-    """
-    get_game = get_game or cached_game_info          # looked up at call time so tests can swap them
-    get_forecast = get_forecast or cached_forecast
-    stat = stat_category.upper().strip()
-    ev_side = "Over" if str(res["best_side"]).startswith("Over") else "Under"
-    p_mkt = core.side_p_market(res, ev_side)
-    m = res.get("matchup") or {}
-    recent_rank = recent_n = None
-    if m and weekly is not None:
-        recent_rank, recent_n = recent_defense_rank(weekly, stat, m["pos"], season, m["opponent"])
-    info: Optional[GameInfo] = None
-    if m.get("opponent"):                 # without a known opponent we cannot tell which game is meant
-        try:
-            info = get_game(str(res["team"]), m["opponent"], gameday or m.get("gameday"))
-        except Exception:
-            info = None
-    weather = game_weather(info, get_forecast)
-    both = {side: score_prop(side, stat, float(line), float(res["mu"]), p_mkt[side], m.get("rank"), m.get("n_teams"),
-                             recent_rank, recent_n, str(m.get("pos", "")), res.get("inj"),
-                             info.spread if info else None, weather) for side in core.SIDES}
-    return core.assemble(both["Over"], both["Under"], ev_side)
-
-
-# --- Odds-board tagging: tag text, column and row colors come from six_point_core ---------------
-NICKNAMES: Dict[str, str] = {
-    "ARI": "cardinals", "ATL": "falcons", "BAL": "ravens", "BUF": "bills", "CAR": "panthers", "CHI": "bears",
-    "CIN": "bengals", "CLE": "browns", "DAL": "cowboys", "DEN": "broncos", "DET": "lions", "GB": "packers",
-    "HOU": "texans", "IND": "colts", "JAX": "jaguars", "KC": "chiefs", "LA": "rams", "LAC": "chargers",
-    "LV": "raiders", "MIA": "dolphins", "MIN": "vikings", "NE": "patriots", "NO": "saints", "NYG": "giants",
-    "NYJ": "jets", "PHI": "eagles", "PIT": "steelers", "SEA": "seahawks", "SF": "49ers", "TB": "buccaneers",
-    "TEN": "titans", "WAS": "commanders",
-}
-
-
-def game_matches(label: str, team: Optional[str], opponent: Optional[str]) -> bool:
-    """True if both teams' nicknames appear in the Odds API game label ("Kansas City Chiefs @ Denver Broncos ...")."""
-    nicks = [NICKNAMES.get(canon(t)) for t in (team, opponent)]
-    return all(nicks) and all(n in str(label).lower() for n in nicks)
-
-
-def teams_in_label(label: str) -> List[str]:
-    """Team codes whose nicknames appear in an Odds API game label."""
-    low = str(label).lower()
-    return [code for code, nick in NICKNAMES.items() if nick in low]
-
-
-def opponent_from_label(label: str, team: Optional[str]) -> Optional[str]:
-    """The other team's code when `team` is one of exactly two teams in the label, else None."""
-    teams = teams_in_label(label)
-    t = canon(team)
-    return next((c for c in teams if c != t), None) if len(teams) == 2 and t in teams else None
-
-
-def label_gameday(label: str) -> Optional[str]:
-    """Game date (YYYY-MM-DD, Eastern) from the end of an event label.
-
-    Handles "(2026-11-09 8:20 PM EST)" (what the app shows now, already Eastern), and the older
-    "(2026-11-09T02:12:00Z)" / "(2026-11-09 02:12 UTC)" UTC forms (converted to Eastern).
-    """
-    m = re.search(r"(\d{4}-\d{2}-\d{2}) \d{1,2}:\d{2} [AP]M E[SD]T", str(label))
-    if m:
-        return m[1]
-    m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*(?:Z|UTC)", str(label))
-    if not m:
-        return None
-    return pd.Timestamp(f"{m[1]} {m[2]}", tz="UTC").tz_convert("America/New_York").strftime("%Y-%m-%d")
+def player_offers(board: pd.DataFrame, player_name: str) -> pd.DataFrame:
+    summary = summarize_board(board)
+    return summary[summary["Player"] == player_name]
