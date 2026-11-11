@@ -218,7 +218,18 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
                 except Exception as e:
                     warnings.append(f"Injury adjustment unavailable ({e}); none applied.")
         usage_mult = inj["mult"] if inj else 1.0
-        total_mult = mult * usage_mult
+
+        # Vegas environment: implied team points vs the team's usual (optional; on top of matchup and usage).
+        env: Optional[Dict[str, Any]] = None
+        if adj_cfg and adj_cfg.get("vegas") and matchup:
+            try:
+                from nfl_vegas import vegas_layer
+                env = vegas_layer(team, matchup.get("opponent"), stat, season, matchup.get("week"),
+                                  gameday or matchup.get("gameday"), adj_cfg.get("vegas_k"))
+            except Exception as e:
+                warnings.append(f"Vegas environment unavailable ({str(e)[:80]}); none applied.")
+        env_mult = env["mult"] if env else 1.0
+        total_mult = mult * usage_mult * env_mult
 
         proj = build_projection(cur[stat].to_numpy(float), pri[stat].to_numpy(float), stat, total_mult)
         recent = logs.tail(10)
@@ -256,7 +267,7 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             # Legacy aliases so an older app.py that reads the previous result keys keeps working.
             "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
             "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
-            "usage_mult": usage_mult, "inj": inj, "tiers": tiers,
+            "usage_mult": usage_mult, "inj": inj, "tiers": tiers, "vegas": env, "env_mult": env_mult,
             "base_proj": proj.mu / total_mult if total_mult else proj.mu, "projection_ewma": proj.mu / total_mult if total_mult else proj.mu,
             "kelly_pct_legacy": kelly_fraction(p_w, p_l, odds_side) * 100.0,
             "gamelog_details": [{"stat_value": float(v), "season": s, "x_label": f"{d}<br>{o}"}
