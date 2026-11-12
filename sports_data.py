@@ -18,7 +18,7 @@ TEAM_ALIASES: Dict[str, str] = {
     "LAR": "LA", "STL": "LA", "SL": "LA", "OAK": "LV", "LVR": "LV", "SD": "LAC", "WSH": "WAS",
     "ARZ": "ARI", "BLT": "BAL", "CLV": "CLE", "HST": "HOU", "JAC": "JAX",
 }
-POS_GROUPS: Tuple[str, ...] = ("QB", "RB", "WR", "TE")
+POS_GROUPS: Tuple[str, ...] = ("QB", "RB", "WR", "TE", "K")       # K = kickers (nflverse labels them position_group "SPEC", position "K")
 
 # Canonical stat label -> candidate nflverse columns (first one present wins; schemas changed across releases).
 SOURCE_CANDIDATES: Dict[str, List[str]] = {
@@ -32,8 +32,18 @@ SOURCE_CANDIDATES: Dict[str, List[str]] = {
     "RECEPTIONS": ["receptions"],
     "TARGETS": ["targets"],
     "INTERCEPTIONS": ["passing_interceptions", "interceptions"],
+    "RUSHING TDS": ["rushing_tds"],
+    "RECEIVING TDS": ["receiving_tds"],
+    "FIELD GOALS MADE": ["fg_made"],
+    "FIELD GOAL ATTEMPTS": ["fg_att"],
+    "EXTRA POINTS MADE": ["pat_made"],
+    "EXTRA POINT ATTEMPTS": ["pat_att"],
 }
-STAT_LABELS: List[str] = list(SOURCE_CANDIDATES.keys())
+# Stats built from the columns above (the prop markets "Kicking Points" and "Anytime Touchdown Scorer" have no single nflverse column).
+#   KICKING POINTS = 3 * field goals made + extra points made;  ANYTIME TOUCHDOWN SCORER = rushing + receiving TDs (a count; line 0.5 = "scores")
+#   TOUCHES = carries + receptions (the opportunity behind a touchdown prop)
+DERIVED_STATS: Tuple[str, ...] = ("KICKING POINTS", "ANYTIME TOUCHDOWN SCORER", "TOUCHES")
+STAT_LABELS: List[str] = list(SOURCE_CANDIDATES.keys()) + list(DERIVED_STATS)
 
 
 def _secret(name: str) -> str:
@@ -90,14 +100,20 @@ def canonicalize_weekly(raw: pd.DataFrame, season: int) -> pd.DataFrame:
     display = df["player_display_name"] if "player_display_name" in df.columns else df["player_name"]
     short = df["player_name"] if "player_name" in df.columns else display
     pid = df["player_id"] if "player_id" in df.columns else display
+    pos = df[pos_col].astype(str).str.upper().replace({"FB": "RB", "HB": "RB"})
+    if "position" in df.columns:                      # kickers sit in position_group "SPEC": read them from `position`
+        pos = pos.where(~df["position"].astype(str).str.upper().eq("K"), "K")
     out = pd.DataFrame({
         "PID": pid.astype(str), "NAME": display.astype(str), "CNAME": clean_series(display), "SNAME": clean_series(short),
-        "POS": df[pos_col].astype(str).str.upper().replace({"FB": "RB", "HB": "RB"}),
+        "POS": pos,
         "TEAM": norm_team(df[team_col]), "OPP": norm_team(df["opponent_team"]),
         "SEASON": int(season), "WEEK": pd.to_numeric(df["week"], errors="coerce"),
     }, index=df.index)
     for label, cands in SOURCE_CANDIDATES.items():
         out[label] = _pick(df, cands)
+    out["KICKING POINTS"] = 3.0 * out["FIELD GOALS MADE"] + out["EXTRA POINTS MADE"]
+    out["ANYTIME TOUCHDOWN SCORER"] = out["RUSHING TDS"] + out["RECEIVING TDS"]
+    out["TOUCHES"] = out["RUSHING ATTEMPTS"] + out["RECEPTIONS"]
     out = out[out["POS"].isin(POS_GROUPS) & out["WEEK"].notna() & (out["OPP"] != "")]
     return out.reset_index(drop=True)
 
