@@ -28,6 +28,7 @@ MARKETS: Dict[str, Dict[str, str]] = {
         "Receptions": "player_receptions",
         "Kicking Points": "player_kicking_points",
         "Field Goals Made": "player_field_goals",
+        "Extra Points Made": "player_pats",
         "Anytime Touchdown Scorer": "player_anytime_td",
     }
 }
@@ -122,13 +123,16 @@ def fetch_prop_board(
     return pd.DataFrame(rows), remaining_requests
 
 
-def _synthetic_under(over_odds: float) -> float:
+TD_YES_JUICE = 1.20     # Yes-only markets (anytime TD) carry far more hold than a two-way prop
+
+
+def _synthetic_under(over_odds: float, juice: float = 1.05) -> float:
     """Generate fair synthetic opposite Under odds if the sportsbook only lists Over."""
     try:
         o = float(over_odds)
         p_over = 100.0 / (o + 100.0) if o > 0 else (-o) / (-o + 100.0)
         p_under = max(1.0 - p_over, 0.05)
-        p_juiced = min(p_under * 1.05, 0.95)
+        p_juiced = min(p_under * juice, 0.95)
         if p_juiced >= 0.5:
             return -round((p_juiced / (1.0 - p_juiced)) * 100.0)
         return round(((1.0 - p_juiced) / p_juiced) * 100.0)
@@ -153,7 +157,8 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
         under_val = under_odds[0] if len(under_odds) > 0 else np.nan
         
         if pd.notna(over_val) and pd.isna(under_val):
-            under_val = _synthetic_under(over_val)
+            yes_only = bool(grp["Side"].isin(["Yes"]).any())      # estimated No price: not bettable, only used to devig
+            under_val = _synthetic_under(over_val, TD_YES_JUICE if yes_only else 1.05)
         
         pivoted.append({
             "Player": player,
