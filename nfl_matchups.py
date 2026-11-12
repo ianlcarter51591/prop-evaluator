@@ -13,17 +13,20 @@ K_TAU = 0.3                  # prior sd when shrinking a backtested k toward the
 DEFAULT_K: Dict[str, float] = {
     "PASSING YARDS": 0.35, "PASS COMPLETIONS": 0.30, "PASS ATTEMPTS": 0.15, "PASSING TDS": 0.25,
     "RUSHING YARDS": 0.35, "RUSHING ATTEMPTS": 0.15, "RECEIVING YARDS": 0.35, "RECEPTIONS": 0.30, "INTERCEPTIONS": 0.20,
+    "KICKING POINTS": 0.10, "FIELD GOALS MADE": 0.10, "EXTRA POINTS MADE": 0.10, "ANYTIME TOUCHDOWN SCORER": 0.25,    # kicker effects are small and noisy
 }
 # Which offensive position groups a stat is evaluated against.
 STAT_POS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "PASSING YARDS": ("QB",), "PASS COMPLETIONS": ("QB",), "PASS ATTEMPTS": ("QB",), "PASSING TDS": ("QB",),
     "INTERCEPTIONS": ("QB",), "RUSHING YARDS": ("RB", "QB"), "RUSHING ATTEMPTS": ("RB", "QB"),
     "RECEIVING YARDS": ("WR", "TE", "RB"), "RECEPTIONS": ("WR", "TE", "RB"),
+    "KICKING POINTS": ("K",), "FIELD GOALS MADE": ("K",), "EXTRA POINTS MADE": ("K",), "ANYTIME TOUCHDOWN SCORER": ("RB", "WR", "TE", "QB"),
 }
 # Backtest only players with meaningful volume (per-game mean at least this much).
 BT_MIN_MEAN: Dict[str, float] = {
     "PASSING YARDS": 120.0, "PASS COMPLETIONS": 12.0, "PASS ATTEMPTS": 20.0, "PASSING TDS": 0.6, "RUSHING YARDS": 20.0,
     "RUSHING ATTEMPTS": 6.0, "RECEIVING YARDS": 25.0, "RECEPTIONS": 2.5, "INTERCEPTIONS": 0.3,
+    "KICKING POINTS": 5.0, "FIELD GOALS MADE": 1.0, "EXTRA POINTS MADE": 1.5, "ANYTIME TOUCHDOWN SCORER": 0.30,
 }
 
 
