@@ -17,6 +17,8 @@ A check that cannot be verified counts as NOT passed (and is shown as unverified
 
 from __future__ import annotations
 
+import dataclasses
+
 import re
 import time
 from dataclasses import dataclass
@@ -36,12 +38,16 @@ MIN_LINE: Dict[str, float] = {
     "PASSING YARDS": 175.5, "PASS COMPLETIONS": 14.5, "PASS ATTEMPTS": 24.5, "PASSING TDS": 1.5,
     "RUSHING YARDS": 35.5, "RUSHING ATTEMPTS": 8.5, "RECEIVING YARDS": 35.5, "RECEPTIONS": 3.5,
     "INTERCEPTIONS": 0.5,
+    "KICKING POINTS": 6.5, "FIELD GOALS MADE": 1.5, "EXTRA POINTS MADE": 1.5, "ANYTIME TOUCHDOWN SCORER": 0.5,
 }
 MIN_EDGE_ABS: Dict[str, float] = {
     "PASSING YARDS": 12.0, "PASS COMPLETIONS": 1.5, "PASS ATTEMPTS": 2.0, "PASSING TDS": 0.25,
     "RUSHING YARDS": 6.0, "RUSHING ATTEMPTS": 1.5, "RECEIVING YARDS": 6.0, "RECEPTIONS": 0.75,
     "INTERCEPTIONS": 0.15,
+    "KICKING POINTS": 0.75, "FIELD GOALS MADE": 0.25, "EXTRA POINTS MADE": 0.25, "ANYTIME TOUCHDOWN SCORER": 0.05,
 }
+# A touchdown scorer is almost always priced as a Yes underdog, so the usual "better than 50%" rule would fail every one; Over/Yes needs 30%.
+IMPLIED_MIN_OVER_BY_STAT: Dict[str, float] = {"ANYTIME TOUCHDOWN SCORER": 0.30}
 MIN_EDGE_PCT = 0.06
 IMPLIED_MIN = 0.50
 RANK_CUTOFF = 16            # half of a 32-team league
@@ -115,9 +121,12 @@ def check_edge(side: str, stat: str, line: float, proj: float) -> Check:
     return core.check_edge(NFL_SPEC, side, stat, line, proj)
 
 
-def check_implied(side: str, p_market: float) -> Check:
+def check_implied(side: str, p_market: float, stat: str = "") -> Check:
     """3. Implied chance."""
-    return core.check_implied(NFL_SPEC, side, p_market)
+    spec = NFL_SPEC
+    if side == "Over" and stat in IMPLIED_MIN_OVER_BY_STAT:
+        spec = dataclasses.replace(NFL_SPEC, implied_min=IMPLIED_MIN_OVER_BY_STAT[stat])
+    return core.check_implied(spec, side, p_market)
 
 
 def rank_supports(side: str, rank: int, n_teams: int, cutoff: int = RANK_CUTOFF) -> bool:
@@ -163,7 +172,7 @@ def score_prop(side: str, stat: str, line: float, proj: float, p_market: float,
                spread: Optional[float], weather: Optional[Weather]) -> SixPointResult:
     """Run all six checks for one side and return the score and tier."""
     return core.result_from_checks(side, (
-        check_line(stat, line), check_edge(side, stat, line, proj), check_implied(side, p_market),
+        check_line(stat, line), check_edge(side, stat, line, proj), check_implied(side, p_market, stat),
         check_defense(side, season_rank, season_n, recent_rank, recent_n, pos), check_injury(inj),
         check_game_script(spread, weather),
     ))
