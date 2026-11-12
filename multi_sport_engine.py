@@ -19,6 +19,7 @@ DEFAULTS: Tuple[str, float] = ("Aaron Rodgers", 244.5)
 STATS: List[str] = [
     "Passing Yards", "Pass Completions", "Pass Attempts", "Passing TDs", "Rushing Yards",
     "Rushing Attempts", "Receiving Yards", "Receptions", "Interceptions",
+    "Kicking Points", "Field Goals Made", "Extra Points Made", "Anytime Touchdown Scorer",    # kicker props and anytime TD (line 0.5: Over = Yes)
 ]
 WINDOW = 8             # recent current-season games feeding the EWMA
 DECAY = 0.85           # EWMA decay per game of age
@@ -31,11 +32,14 @@ FAMILY: Dict[str, str] = {
     "PASSING YARDS": "gamma", "RUSHING YARDS": "gamma", "RECEIVING YARDS": "gamma",
     "PASS COMPLETIONS": "normal", "PASS ATTEMPTS": "normal", "RUSHING ATTEMPTS": "normal",
     "PASSING TDS": "count", "RECEPTIONS": "count", "INTERCEPTIONS": "count",
+    # Kicker totals are under-dispersed next to a Poisson (kick volume is steady), so they use the rounded Normal; a TD scorer is a rare count.
+    "KICKING POINTS": "normal", "FIELD GOALS MADE": "normal", "EXTRA POINTS MADE": "normal", "ANYTIME TOUCHDOWN SCORER": "count",
 }
 # Typical game-to-game coefficient of variation (assumptions used only to stabilize tiny samples).
 DEFAULT_CV: Dict[str, float] = {
     "PASSING YARDS": 0.25, "PASS COMPLETIONS": 0.22, "PASS ATTEMPTS": 0.18, "PASSING TDS": 0.65, "RUSHING YARDS": 0.55,
     "RUSHING ATTEMPTS": 0.35, "RECEIVING YARDS": 0.65, "RECEPTIONS": 0.50, "INTERCEPTIONS": 1.00,
+    "KICKING POINTS": 0.45, "FIELD GOALS MADE": 0.60, "EXTRA POINTS MADE": 0.55, "ANYTIME TOUCHDOWN SCORER": 1.30,
 }
 
 
