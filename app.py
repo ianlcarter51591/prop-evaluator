@@ -40,7 +40,7 @@ from odds_api_client import (
     player_offers,
     summarize_board,
 )
-from sports_data import NFL_TEAMS, load_weekly
+from sports_data import NFL_TEAMS, clean_name, load_weekly
 import cloud_store
 import nfl_bet_log as bl
 import nfl_snapshots as snaps_mod
@@ -386,7 +386,7 @@ def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progr
             out[name] = "incomplete odds"
             continue
         if progress is not None:
-            progress.progress(k / max(n, 1), text=f"Scanning {name} ({k + 1}/{n})")
+            progress.progress(k / max(n, 1), text=f"Scanning {with_pos(name)} ({k + 1}/{n})")
         try:
             res = run_evaluation(name, stat_category, r["Line"], r["Over"], r["Under"],
                                  ss.get("input_source", SOURCES[0]), "AUTO", game_label, strict=True, snap_source="scan")
@@ -453,7 +453,12 @@ def render_live_panel() -> None:
             scan = ss.get("board_scan")
             if scan is not None and scan["token"] == ss.get("board_token"):
                 shown = add_six_point_column(summary, scan["six"])
-            st.dataframe(style_tags(shown) if "Six-Point" in shown else shown, use_container_width=True)
+            _why = positions_problem()
+            if _why:
+                st.warning(f"Player positions couldn't be loaded: {_why}. Reload the page to retry.")
+            shown_pos = shown.copy()
+            shown_pos.insert(1, "Pos", shown_pos["Player"].map(lambda n: position_of(n) or "—"))
+            st.dataframe(style_tags(shown_pos) if "Six-Point" in shown_pos else shown_pos, use_container_width=True)
             st.caption(LEGEND)
             if "Six-Point" in shown:
                 tags = shown["Six-Point"].astype(str)
@@ -464,11 +469,11 @@ def render_live_panel() -> None:
                 bar = st.progress(0.0, text="Starting scan...")
                 ss["board_scan"] = {"token": ss.get("board_token"), "six": scan_board(summary, live_stat, ss.get("board_game_label", ""), bar)}
                 st.rerun()
-            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", shown["Player"].tolist(), key="pick_player")
+            player_pick = st.selectbox("Step 4: Choose Player to Evaluate", shown["Player"].tolist(), key="pick_player", format_func=with_pos)
             offers = player_offers(board, player_pick)
             if not offers.empty:
                 row = offers.iloc[0]
-                if st.button(f"⚡ Populate {player_pick} ({row['Line']} | Over {row['Over']} / Under {row['Under']})", key="populate_btn"):
+                if st.button(f"⚡ Populate {with_pos(player_pick)} ({row['Line']} | Over {row['Over']} / Under {row['Under']})", key="populate_btn"):
                     sync_populate_to_widgets(live_stat, player_pick, row["Line"], row["Over"], row["Under"])
                     st.rerun()
 
@@ -533,10 +538,41 @@ def render_final_assessment(res: Dict[str, Any]) -> None:
                "Thresholds live at the top of nfl_six_point.py.")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _name_positions(season: int) -> Dict[str, str]:
+    """{normalized player name -> position group (QB/RB/WR/TE/K)} from the nflverse weekly data the app already loads (latest row wins)."""
+    w = load_weekly(season, back=1).sort_values(["SEASON", "WEEK"])
+    last = w.drop_duplicates("CNAME", keep="last")
+    return dict(zip(last["CNAME"], last["POS"]))
+
+
+def position_of(name: Any) -> Optional[str]:
+    """Position group of a player (QB, RB, WR, TE, K), or None when nflverse doesn't list him."""
+    try:
+        return _name_positions(int(default_season())).get(clean_name(str(name)))
+    except Exception:
+        return None
+
+
+def positions_problem() -> str:
+    """Why positions can't be shown right now ('' when they load fine). Failures are never cached, so a reload retries."""
+    try:
+        _name_positions(int(default_season()))
+        return ""
+    except Exception as e:
+        return str(e)
+
+
+def with_pos(name: Any) -> str:
+    """'Patrick Mahomes (QB)' for display; the plain name when the position is unknown."""
+    p = position_of(name)
+    return f"{name} ({p})" if p else str(name)
+
+
 def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
     """Real opponent-vs-position panel (replaces the old hash-generated placeholders)."""
     m = res.get("matchup")
-    st.markdown("### 🛡️ Opponent Matchup (real nflverse data)")
+    st.markdown("### 🛡️ Opponent vs this stat by position (real nflverse data)")
     if not m:
         st.info("No matchup adjustment applied. Pick an opponent (or use Auto) to see rank vs position.")
         return
@@ -559,6 +595,10 @@ def render_matchup(res: Dict[str, Any], stat_category: str) -> None:
         notes.append(f"💰 {env['note']} (k = {env['k']:.2f}, {src}).")
     for n in notes:
         st.caption(n)
+    if m.get("by_pos"):
+        st.caption(f"{res['player_name']} is a **{m['pos']}**, so the rank above is against {m['pos']}s. The same defense against every position for {stat_category}:")
+        st.dataframe(pd.DataFrame(m["by_pos"]).rename(columns={"pos": "POSITION", "rank": "RANK (1 = SOFTEST)", "n_teams": "OF", "allowed": "ALLOWED / GM",
+                                                               "index": "INDEX"}).round(2), use_container_width=True, hide_index=True)
     with st.expander(f"All 32 defenses vs {m['pos']} ({stat_category})"):
         board = m["board"].rename(columns={"EST": "ALLOWED (SHRUNK)", "CUR": "THIS SEASON"}).round(2)
         st.dataframe(board, use_container_width=True, hide_index=True)
@@ -712,7 +752,7 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     photo = _player_photo(res)
     if photo:
         photo_col.image(photo, width=120)
-    title_col.markdown(f"## {res['player_name']} | {stat_category}")
+    title_col.markdown(f"## {res['player_name']} ({res['pos']}) | {stat_category}")
     title_col.caption(f"{res['team']} · {res['pos']} · {res['n_current']} games this season, {res['n_prior']} last season")
     c = st.columns(6)
     _metric(c[0], "ADJ PROJ", f"{res['mu']:.2f}")
