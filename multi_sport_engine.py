@@ -163,7 +163,17 @@ def resolve_matchup(team: str, pos: str, stat: str, season: int, opponent: Optio
         return None, f"No {pos} defense data for {opp}."
     row = table.loc[opp]
     k = (k_map or {}).get(stat, DEFAULT_K[stat])
+    by_pos: List[Dict[str, Any]] = []              # the same opponent ranked against every position group for this stat
+    for p in ("QB", "RB", "WR", "TE", "K"):
+        try:
+            t = table if p == pos else matchup_table(weekly, stat, p, season)
+            if opp in t.index and float(t["LEAGUE"].iloc[0]) > 0:
+                r = t.loc[opp]
+                by_pos.append({"pos": p, "rank": int(r["RANK"]), "n_teams": int(len(t)), "allowed": float(r["EST"]), "index": float(r["INDEX"])})
+        except Exception:
+            continue
     return {
+        "by_pos": by_pos,
         "opponent": opp, "pos": pos, "week": info.get("week"), "home": info.get("home"), "gameday": info.get("gameday"),
         "rest": info.get("rest"), "opp_rest": info.get("opp_rest"), "rank": int(row["RANK"]), "n_teams": int(len(table)),
         "allowed": float(row["EST"]), "current_allowed": float(row["CUR"]) if pd.notna(row["CUR"]) else None,
