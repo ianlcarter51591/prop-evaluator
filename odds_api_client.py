@@ -101,7 +101,9 @@ def fetch_prop_board(
         "bookmakers": ",".join(bookmakers),
         "oddsFormat": "american",
     }
-    resp = requests.get(url, params=params, timeout=10)
+    resp = requests.get(url, params={**params, "includeLinks": "true"}, timeout=10)      # bookmaker deep links for the bet buttons
+    if resp.status_code in (400, 422):
+        resp = requests.get(url, params=params, timeout=10)                               # plan or API without links: plain odds
     if resp.status_code != 200:
         raise OddsApiError(f"API Error ({resp.status_code}): {resp.text}")
 
@@ -119,6 +121,7 @@ def fetch_prop_board(
                     "Side": outcome.get("name"),
                     "Line": outcome.get("point", np.nan),
                     "Odds": outcome.get("price"),
+                    "Link": outcome.get("link") or mkt.get("link") or bmark.get("link") or "",
                 })
     return pd.DataFrame(rows), remaining_requests
 
@@ -143,7 +146,7 @@ def _synthetic_under(over_odds: float, juice: float = 1.05) -> float:
 def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
     """Pivot raw outcomes table into a single row per player with Line, Over, and Under columns."""
     if board.empty:
-        return pd.DataFrame(columns=["Player", "Line", "Over", "Under"])
+        return pd.DataFrame(columns=["Player", "Line", "Over", "Under", "OverLink", "UnderLink"])
     
     pivoted = []
     for player, grp in board.groupby("Player"):
@@ -152,6 +155,9 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
         
         over_odds = grp[grp["Side"].isin(["Over", "Yes"])]["Odds"].values
         under_odds = grp[grp["Side"].isin(["Under", "No"])]["Odds"].values
+        links = grp["Link"] if "Link" in grp.columns else pd.Series("", index=grp.index)
+        over_link = next(iter(links[grp["Side"].isin(["Over", "Yes"])].fillna("")), "")
+        under_link = next(iter(links[grp["Side"].isin(["Under", "No"])].fillna("")), "")      # "" for an estimated (synthetic) No price
         
         over_val = over_odds[0] if len(over_odds) > 0 else np.nan
         under_val = under_odds[0] if len(under_odds) > 0 else np.nan
@@ -165,6 +171,7 @@ def summarize_board(board: pd.DataFrame) -> pd.DataFrame:
             "Line": float(line) if pd.notna(line) else 0.5,
             "Over": float(over_val) if pd.notna(over_val) else np.nan,
             "Under": float(under_val) if pd.notna(under_val) else np.nan,
+            "OverLink": over_link, "UnderLink": under_link,
         })
     return pd.DataFrame(pivoted)
 
