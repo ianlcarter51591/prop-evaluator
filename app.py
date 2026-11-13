@@ -471,6 +471,7 @@ def render_live_panel() -> None:
         if board is not None and not board.empty:
             summary = summarize_board(board)
             remember_links(summary, ss.get("board_stat", live_stat))
+            summary = summary.drop(columns=["OverLink", "UnderLink"], errors="ignore")      # links are used by Place Bet and the parlay slip, not shown here
             shown = summary
             scan = ss.get("board_scan")
             if scan is not None and scan["token"] == ss.get("board_token"):
@@ -785,6 +786,13 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     _metric(c[5], "EV", f"{res['ev_pct']:+.1f}%", _tone(res["ev_pct"]))
     st.markdown("---")
     render_final_assessment(res)
+    try:
+        info_ = assessment_summary(res)
+        ctx_ = st.session_state.get("last_ctx") or {}
+        shared_ui.render_place_bet(st, res["player_name"], stat_category, float(line_val), {"Over": ctx_.get("over"), "Under": ctx_.get("under")},
+                                   links_for(res["player_name"], stat_category, line_val), info_["best"]["side"] if info_ else "")
+    except Exception:
+        pass       # the bet buttons are a convenience: never break the result screen
     st.markdown("---")
     render_matchup(res, stat_category)
     render_injury_usage(res)
