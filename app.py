@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -314,6 +314,26 @@ def _now_et_text() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
+def remember_links(summary: pd.DataFrame, stat_label: str) -> None:
+    """Keep each board row's DraftKings links so an evaluation of that prop can save them with its snapshot (read by record_snapshot)."""
+    if summary is None or summary.empty or "OverLink" not in summary.columns:
+        return
+    store = st.session_state.setdefault("bet_links", {})
+    for r in summary.itertuples():
+        try:
+            store[(str(r.Player).strip().lower(), str(stat_label).upper().strip(), round(float(r.Line), 2))] = (str(r.OverLink or ""), str(r.UnderLink or ""))
+        except (TypeError, ValueError):
+            continue
+
+
+def links_for(name: str, stat_label: str, line: float) -> Tuple[str, str]:
+    """(over link, under link) remembered for this prop, or empty strings."""
+    try:
+        return st.session_state.get("bet_links", {}).get((str(name).strip().lower(), str(stat_label).upper().strip(), round(float(line), 2)), ("", ""))
+    except (TypeError, ValueError):
+        return ("", "")
+
+
 def record_snapshot(res: Dict[str, Any], stat_category: str, line: float, over: float, under: float, game_label: str,
                     snap_source: str) -> None:
     """Save what the model believed for this prop (projection, probabilities, six-point) so it can be graded later.
@@ -331,7 +351,8 @@ def record_snapshot(res: Dict[str, Any], stat_category: str, line: float, over: 
         if "snapshots" not in ss:
             ss["snapshots"] = load_snapshots()
         row = sn.make_row(res, stat_category, float(line), float(over), float(under), snap_source, _now_et_text(),
-                          int(default_season()), (label_gameday(game_label) if game_label else "") or "")
+                          int(default_season()), (label_gameday(game_label) if game_label else "") or "",
+                          links_for(res.get("player_name", ""), stat_category, line))
         ss["snapshots"] = save_snapshots(sn.upsert(ss["snapshots"], [row]), force=snap_source != "scan")
     except Exception:
         pass
@@ -449,6 +470,7 @@ def render_live_panel() -> None:
         board = ss.get("board")
         if board is not None and not board.empty:
             summary = summarize_board(board)
+            remember_links(summary, ss.get("board_stat", live_stat))
             shown = summary
             scan = ss.get("board_scan")
             if scan is not None and scan["token"] == ss.get("board_token"):
