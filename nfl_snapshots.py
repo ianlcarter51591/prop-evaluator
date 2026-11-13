@@ -35,7 +35,7 @@ VOLUME_COL: Dict[str, Optional[str]] = {
 }
 TEXT_COLS: List[str] = ["SNAP_ID", "TS_ET", "GAMEDAY", "GAME_KEY", "GAME", "PLAYER", "TEAM", "POS", "STAT", "OPPONENT", "SOURCE",
                         "SHOWN_SIDE", "EV_SIDE", "TIER_SHOWN", "FAILED_OVER", "FAILED_UNDER", "STATUS", "SHOWN_RESULT",
-                        "EV_RESULT", "WHY"]
+                        "EV_RESULT", "WHY", "OVER_LINK", "UNDER_LINK"]
 NUM_COLS: List[str] = ["SEASON", "WEEK", "LAST_WEEK_SEEN", "LINE", "OVER_ODDS", "UNDER_ODDS", "MU", "PROJ_MEAN", "RAW_AVG",
                        "MATCHUP_MULT", "USAGE_MULT", "ENV_MULT", "P_OVER", "P_UNDER", "PM_OVER", "PM_UNDER", "SIX_OVER", "SIX_UNDER", "RECENT_SD", "ACTUAL",
                        "STAT_ERR", "Z", "VOL_EXP", "VOL_ACT", "VOL_ERR_PCT"]
@@ -59,7 +59,7 @@ def _last_week_seen(res: Mapping[str, Any]) -> Optional[int]:
 
 
 def make_row(res: Mapping[str, Any], stat_category: str, line: float, over: float, under: float, source: str,
-             now_et: str, season: int, gameday: str = "") -> Dict[str, Any]:
+             now_et: str, season: int, gameday: str = "", links: Tuple[str, str] = ("", "")) -> Dict[str, Any]:
     """One snapshot row from an evaluate_prop result (a dict without 'error')."""
     six = res.get("six_point") or {}
     sides = res.get("sides") or {}
@@ -84,6 +84,7 @@ def make_row(res: Mapping[str, Any], stat_category: str, line: float, over: floa
         "SHOWN_SIDE": shown, "EV_SIDE": six.get("ev_side", ""), "TIER_SHOWN": (six.get(shown) or {}).get("tier", ""),
         "SIX_OVER": (six.get("Over") or {}).get("score"), "SIX_UNDER": (six.get("Under") or {}).get("score"),
         "FAILED_OVER": _failed(six.get("Over")), "FAILED_UNDER": _failed(six.get("Under")), "STATUS": "Pending",
+        "OVER_LINK": links[0], "UNDER_LINK": links[1],
     }
 
 
