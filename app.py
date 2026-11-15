@@ -44,6 +44,7 @@ from sports_data import NFL_TEAMS, clean_name, load_weekly
 import cloud_store
 import nfl_bet_log as bl
 import nfl_snapshots as snaps_mod
+import pin_check
 import nfl_vegas
 import shared_ui
 import live_game
@@ -334,6 +335,25 @@ def links_for(name: str, stat_label: str, line: float) -> Tuple[str, str]:
         return ("", "")
 
 
+def pin_assessment(res: Dict[str, Any], stat_category: str, line: float, over: float, under: float) -> Dict[str, Any]:
+    """Pinnacle cross-check for the side the app shows ({} when no Pinnacle board was fetched for this stat, or for Yes-only markets)."""
+    ss = st.session_state
+    if str(ss.get("pin_stat", "")).upper() != str(stat_category).upper() or "ANYTIME" in str(stat_category).upper():
+        return {}
+    side = (res.get("six_point") or {}).get("best") or res.get("best_side") or "Over"
+    return pin_check.for_player(ss.get("pin_summary"), str(res.get("player_name", "")), float(line), float(over), float(under), str(side))
+
+
+def render_pin_panel(res: Dict[str, Any], stat_category: str, line: float) -> None:
+    """One line under the Evaluate button: does Pinnacle agree with the side shown?"""
+    ctx = st.session_state.get("last_ctx") or {}
+    a = pin_assessment(res, stat_category, line, ctx.get("over", -110), ctx.get("under", -110))
+    if not a:
+        return
+    side = (res.get("six_point") or {}).get("best") or res.get("best_side") or ""
+    {"Agrees": st.success, "Disagrees": st.warning}.get(a["FLAG"], st.info)(f"**Pinnacle cross-check ({side}): {a['FLAG']}.** {a['TEXT']}")
+
+
 def record_snapshot(res: Dict[str, Any], stat_category: str, line: float, over: float, under: float, game_label: str,
                     snap_source: str) -> None:
     """Save what the model believed for this prop (projection, probabilities, six-point) so it can be graded later.
@@ -352,7 +372,7 @@ def record_snapshot(res: Dict[str, Any], stat_category: str, line: float, over: 
             ss["snapshots"] = load_snapshots()
         row = sn.make_row(res, stat_category, float(line), float(over), float(under), snap_source, _now_et_text(),
                           int(default_season()), (label_gameday(game_label) if game_label else "") or "",
-                          links_for(res.get("player_name", ""), stat_category, line))
+                          links_for(res.get("player_name", ""), stat_category, line), pin_assessment(res, stat_category, line, over, under))
         ss["snapshots"] = save_snapshots(sn.upsert(ss["snapshots"], [row]), force=snap_source != "scan")
     except Exception:
         pass
@@ -446,17 +466,21 @@ def render_live_panel() -> None:
             game_idx = st.selectbox("Step 2: Select Game", range(len(events)), format_func=lambda i: str(events.loc[i, "label"]), key="live_game")
             refresh = st.checkbox("Refresh odds (costs credits; otherwise a board fetched in the last 10 min is reused for free)",
                                   key="refresh_odds")
+            use_pin = st.checkbox("Also pull Pinnacle to cross-check DraftKings (one request for both books; shown as information only)", value=True, key="use_pin")
             if st.button(f"Step 3: Fetch {live_stat} Odds", key="fetch_board"):
                 ev_id = str(events.loc[game_idx, "id"])
 
                 def fresh() -> Any:
-                    board_, remaining_ = fetch_prop_board("NFL", ev_id, live_stat, ("draftkings",), api_key)
+                    board_, remaining_ = fetch_prop_board("NFL", ev_id, live_stat, ("draftkings", "pinnacle") if use_pin else ("draftkings",), api_key)
                     odds_credits.record(remaining_)
                     return board_, remaining_
 
                 try:
-                    (board, _), cached_age = odds_credits.fetch_cached(("NFL", ev_id, live_stat), fresh, lambda v: not v[0].empty, refresh)
+                    (board, _), cached_age = odds_credits.fetch_cached(("NFL", ev_id, live_stat, bool(use_pin)), fresh, lambda v: not v[0].empty, refresh)
                     st.caption(odds_credits.cache_note(cached_age))
+                    board, pin_board = pin_check.split(board, "Bookmaker")
+                    ss["pin_summary"] = summarize_board(pin_board) if use_pin and not pin_board.empty else pd.DataFrame()
+                    ss["pin_stat"] = live_stat if use_pin else ""
                     ss["board"], ss["board_scan"], ss["board_token"] = board, None, uuid.uuid4().hex
                     ss["board_game_label"] = str(events.loc[game_idx, "label"])
                     ss["board_stat"] = live_stat
@@ -481,6 +505,9 @@ def render_live_panel() -> None:
                 st.warning(f"Player positions couldn't be loaded: {_why}. Reload the page to retry.")
             shown_pos = shown.copy()
             shown_pos.insert(1, "Pos", shown_pos["Player"].map(lambda n: position_of(n) or "—"))
+            if ss.get("pin_stat") and "ANYTIME" not in str(ss.get("pin_stat")).upper():
+                shown_pos = pin_check.table(shown_pos, ss.get("pin_summary"))
+                st.caption("Pin columns: Pinnacle's line, its no-vig Over %, and what a DraftKings Over / Under is worth if Pinnacle's price is right (same line only; — = Pinnacle has no price).")
             st.dataframe(style_tags(shown_pos) if "Six-Point" in shown_pos else shown_pos, use_container_width=True)
             st.caption(LEGEND)
             if "Six-Point" in shown:
@@ -876,6 +903,10 @@ def render_snapshots() -> None:
         st.info("No snapshots yet. Evaluate a prop or scan a board and they will appear here.")
         return
     tiers = sn.by_tier(snaps)
+    pins = sn.by_pin(snaps)
+    if not pins.empty:
+        st.markdown("**Graded results by Pinnacle cross-check** (does agreeing with Pinnacle predict winning? Wait for 100+ graded picks before trusting this.)")
+        st.dataframe(pins.round(1), use_container_width=True, hide_index=True)
     if not tiers.empty:
         st.markdown("**Graded results by tier shown**")
         st.dataframe(tiers.round(1), use_container_width=True, hide_index=True)
@@ -1163,6 +1194,7 @@ def main() -> None:
             if "error" in res:
                 st.error(res["error"])
             else:
+                render_pin_panel(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
                 render_results(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
 
         with st.expander("ℹ️ How the model works"):
