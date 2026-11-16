@@ -45,6 +45,7 @@ import cloud_store
 import nfl_bet_log as bl
 import nfl_snapshots as snaps_mod
 import pin_check
+import best_picks
 import nfl_vegas
 import shared_ui
 import live_game
@@ -427,6 +428,76 @@ def _run_evaluation(name: str, stat_category: str, line: float, over: float, und
                 return res      # manual Evaluate of someone from another game: keep the normal result
             res = run(opp)
     return res
+
+
+def _bp_star(rows: pd.DataFrame) -> int:
+    """Favorite the given Best Picks rows (they were saved as snapshots by the scan); returns how many were starred."""
+    import favorites as fv
+    new, n = fv.star_many(_fav_snaps(), rows)
+    if n:
+        st.session_state["snapshots"] = _fav_save(new)
+    return n
+
+
+BP_DEFAULT_STATS = ["Passing Yards", "Rushing Yards", "Receiving Yards", "Receptions"]
+BP_KEEP_KEYS = ("pin_summary", "pin_stat", "board_game_label")
+BP_STATS = [s for s in MARKETS["NFL"] if "ANYTIME" not in s.upper()]        # Yes-only markets have no two-way price to rank
+
+
+def _bp_games() -> pd.DataFrame:
+    """Upcoming NFL games for the Best Picks tab: id, label, day (ET date)."""
+    events, remaining = list_events("NFL", _secret("ODDS_API_KEY"))
+    odds_credits.record(remaining)
+    if events.empty:
+        return pd.DataFrame(columns=["id", "label", "day"])
+    day = pd.to_datetime(events["commence_time"], utc=True, errors="coerce").dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d").fillna("")
+    return events.assign(day=day)
+
+
+def _bp_fetch_board(game: Any, stat: str) -> pd.DataFrame:
+    """One game's DraftKings board for a stat (10-min cache shared with the Evaluate tab); sets the context the evaluation reads."""
+    ss = st.session_state
+    api_key, ev_id = _secret("ODDS_API_KEY"), str(game["id"])
+
+    def fresh() -> Any:
+        board_, remaining_ = fetch_prop_board("NFL", ev_id, stat, ("draftkings", "pinnacle"), api_key)
+        odds_credits.record(remaining_)
+        return board_, remaining_
+
+    try:
+        (board, _), _age = odds_credits.fetch_cached(("NFL", ev_id, stat, True), fresh, lambda v: not v[0].empty)
+    except OddsApiError as exc:
+        raise RuntimeError(odds_credits.friendly_error(exc))
+    dk, pin_board = pin_check.split(board, "Bookmaker")
+    ss["pin_summary"], ss["pin_stat"] = (summarize_board(pin_board) if not pin_board.empty else pd.DataFrame()), stat
+    ss["board_game_label"] = str(game["label"])
+    summary = summarize_board(dk) if not dk.empty else pd.DataFrame()
+    remember_links(summary, stat)
+    return summary
+
+
+def _bp_evaluate(game: Any, stat: str, name: str, line: float, over: float, under: float) -> Optional[Dict[str, Any]]:
+    """Evaluate one prop in its game (same path as the board scan) and return its Best Picks row."""
+    ss = st.session_state
+    label = str(game["label"])
+    res = run_evaluation(name, stat, line, over, under, ss.get("input_source", SOURCES[0]), "AUTO", label, strict=True, snap_source="scan")
+    if "error" in res:
+        return None
+    m = res.get("matchup") or {}
+    row = best_picks.make_row(res, stat, line, label.split(" (")[0], m.get("pos") or position_of(name) or "", m.get("opponent"), m.get("rank"), m.get("n_teams"))
+    if row:
+        row["PIN"] = pin_check.for_player(ss.get("pin_summary"), name, line, over, under, row["SIDE"])["FLAG"]
+    return row
+
+
+def render_best_picks() -> None:
+    """🏆 Best Picks tab."""
+    if not _secret("ODDS_API_KEY"):
+        st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
+        return
+    best_picks.render(st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
+                      evaluate=_bp_evaluate, keep_keys=BP_KEEP_KEYS, after_scan=cloud_store.flush, star=_bp_star,
+                      credits_note=lambda: odds_credits.credits_status()[0] or "")
 
 
 def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
@@ -1178,7 +1249,9 @@ def main() -> None:
 
     if ss.get("snap_missing"):
         st.warning("nfl_snapshots.py is not uploaded to the app's GitHub repo, so predictions are NOT being saved. Upload it (it is in the zip).")
-    tab_eval, tab_log, tab_snap, tab_parlay, tab_bt = st.tabs(["⚡ Evaluate", "📒 Bet Log", "📸 Snapshots", "🎟️ Parlay", "🔬 Matchup Backtest"])
+    tab_eval, tab_best, tab_log, tab_snap, tab_parlay, tab_bt = st.tabs(["⚡ Evaluate", "🏆 Best Picks", "📒 Bet Log", "📸 Snapshots", "🎟️ Parlay", "🔬 Matchup Backtest"])
+    with tab_best:
+        render_best_picks()
     with tab_eval:
         render_live_scoreboard()
         render_live_panel()
