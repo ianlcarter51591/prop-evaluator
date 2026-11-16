@@ -35,7 +35,7 @@ VOLUME_COL: Dict[str, Optional[str]] = {
 }
 TEXT_COLS: List[str] = ["SNAP_ID", "TS_ET", "GAMEDAY", "GAME_KEY", "GAME", "PLAYER", "TEAM", "POS", "STAT", "OPPONENT", "SOURCE",
                         "SHOWN_SIDE", "EV_SIDE", "TIER_SHOWN", "FAILED_OVER", "FAILED_UNDER", "STATUS", "SHOWN_RESULT",
-                        "EV_RESULT", "WHY", "OVER_LINK", "UNDER_LINK", "PIN_FLAG"]
+                        "EV_RESULT", "WHY", "OVER_LINK", "UNDER_LINK", "PIN_FLAG", "FAV"]
 NUM_COLS: List[str] = ["SEASON", "WEEK", "LAST_WEEK_SEEN", "LINE", "OVER_ODDS", "UNDER_ODDS", "MU", "PROJ_MEAN", "RAW_AVG",
                        "MATCHUP_MULT", "USAGE_MULT", "ENV_MULT", "P_OVER", "P_UNDER", "PM_OVER", "PM_UNDER", "SIX_OVER", "SIX_UNDER", "RECENT_SD", "ACTUAL",
                        "STAT_ERR", "Z", "VOL_EXP", "VOL_ACT", "VOL_ERR_PCT", "PIN_LINE", "PIN_P_SIDE", "DK_P_SIDE", "PIN_EV"]
@@ -112,8 +112,11 @@ def upsert(existing: pd.DataFrame, rows: List[Dict[str, Any]]) -> pd.DataFrame:
     allr = pd.concat([normalize(existing), new], ignore_index=True)
     key = allr[KEY_COLS].astype(str).agg("|".join, axis=1)
     done = key[allr["STATUS"] != "Pending"]
+    starred = set(key[allr["FAV"] == "Y"])                       # a re-evaluated prop keeps its favorite star
     allr = allr[~(key.isin(done) & (allr["STATUS"] == "Pending"))]
-    return allr.drop_duplicates(KEY_COLS, keep="last").reset_index(drop=True)
+    out = allr.drop_duplicates(KEY_COLS, keep="last").reset_index(drop=True)
+    out["FAV"] = np.where(out[KEY_COLS].astype(str).agg("|".join, axis=1).isin(starred), "Y", out["FAV"])
+    return out
 
 
 def _lookup(logs_by_player: Mapping[str, pd.DataFrame], stats: List[str]) -> pd.DataFrame:
