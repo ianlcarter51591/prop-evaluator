@@ -30,9 +30,9 @@ REQUIRED: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("pin_check", ("split", "table", "for_player", "cross", "assess")),
     ("nfl_bet_log", ("make_bet_row", "add_bet", "auto_grade", "summarize_log", "merge_logs", "apply_board_as_closing")),
     ("favorites", ("legs", "option_table", "set_flags", "toggle", "find_id", "star_many")),
-    ("best_picks", ("render", "make_row", "rank_picks")),
+    ("best_picks", ("render", "make_row", "rank_picks", "selected_row")),
     ("prop_review", ("fit_blend", "blend", "render_blend_banner", "render_calibration", "record_close", "compute_clv", "clv_summary", "render_clv", "render_daily", "day_counts", "graded_days")),
-    ("shared_ui", ("render_storage_status", "render_validation", "render_parlay", "render_favorites", "render_star_button")),
+    ("shared_ui", ("render_storage_status", "render_validation", "render_parlay", "render_favorites", "render_star_button", "clickable_table")),
 )
 
 
