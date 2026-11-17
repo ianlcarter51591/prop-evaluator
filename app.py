@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -516,6 +516,69 @@ def _bp_evaluate(game: Any, stat: str, name: str, line: float, over: float, unde
     return row
 
 
+def _queue_open(player: str, stat: str, line: Any, over: Any, under: Any, opponent: Optional[str] = None) -> str:
+    """Queue a prop for the Evaluate form (applied at the top of the next run, before the form is drawn) and say what was loaded."""
+    nums = pd.to_numeric(pd.Series([line, over, under]), errors="coerce")
+    if nums.isna().any():
+        raise RuntimeError("that row has no line or prices saved.")
+    label = next((s for s in stat_options() if s.upper() == str(stat).strip().upper()), None)
+    if label is None:
+        raise RuntimeError(f"'{stat}' isn't one of the Evaluate tab's stats.")
+    opp = str(opponent).strip().upper() if opponent else ""
+    st.session_state["open_request"] = {"player": str(player), "stat": label, "line": float(nums[0]), "over": float(nums[1]),
+                                        "under": float(nums[2]), "opponent": opp if opp in NFL_TEAMS else None}
+    return f"Loaded {player} {label} {float(nums[0]):g} into the ⚡ Evaluate tab."
+
+
+def _apply_open_request() -> None:
+    """Move a queued prop into the Evaluate form widgets (before they are drawn) and evaluate it this run."""
+    ss = st.session_state
+    req = ss.pop("open_request", None)
+    if not req:
+        return
+    sync_populate_to_widgets(req["stat"], req["player"], req["line"], req["over"], req["under"])
+    if req["opponent"]:
+        ss["input_opp"] = req["opponent"]
+
+
+def _open_snapshot_row(row: Mapping[str, Any]) -> str:
+    """Click handler for saved-prediction rows (Snapshots and Parlay tabs): the saved line, prices and opponent."""
+    return _queue_open(row["PLAYER"], row["STAT"], row["LINE"], row["OVER_ODDS"], row["UNDER_ODDS"], row.get("OPPONENT"))
+
+
+def _open_board_row(row: Mapping[str, Any]) -> str:
+    """Click handler for the Step 3 board: that player's DraftKings line and prices; the opponent comes from the selected game."""
+    ss = st.session_state
+    return _queue_open(row["Player"], ss.get("board_stat") or ss.get("input_stat"), row["Line"], row["Over"], row["Under"])
+
+
+def _bp_board_row(row: Mapping[str, Any]) -> Tuple[Any, pd.Series]:
+    """(game, current DraftKings board row) for a Best Picks row; raises with a plain reason if either is gone."""
+    games = st.session_state.get("bp_games")
+    hit = games[games["id"].astype(str) == str(row.get("EVENT_ID", ""))] if games is not None and "id" in games else pd.DataFrame()
+    if hit.empty:
+        raise RuntimeError("that game is no longer in the game list. Press Load and Refresh now.")
+    game = hit.iloc[0]
+    summary = _bp_fetch_board(game, str(row["STAT"]))          # the board pulled by the scan (free if under 10 minutes old); sets the game context
+    m = summary[summary["Player"].map(pin_check.norm) == pin_check.norm(row["PLAYER"])] if not summary.empty else summary
+    if m.empty:
+        raise RuntimeError(f"{row['PLAYER']} is no longer on DraftKings' {row['STAT']} board.")
+    return game, m.iloc[0]
+
+
+def _bp_open_note(row: Mapping[str, Any], r: pd.Series) -> str:
+    moved = abs(float(r["Line"]) - float(row["LINE"])) > 1e-9
+    return (f"Loaded {row['PLAYER']} {row['STAT']} {float(r['Line']):g} into the ⚡ Evaluate tab"
+            + (f" (the line has moved from {float(row['LINE']):g})" if moved else "") + ". Open that tab to see the full evaluation.")
+
+
+def _bp_open(row: Mapping[str, Any]) -> str:
+    """Load a clicked Best Picks row into the Evaluate form (current line and prices); it is evaluated when that tab renders."""
+    _game, r = _bp_board_row(row)
+    sync_populate_to_widgets(str(row["STAT"]), str(row["PLAYER"]), float(r["Line"]), float(r["Over"]), float(r["Under"]))
+    return _bp_open_note(row, r)
+
+
 def render_best_picks() -> None:
     """🏆 Best Picks tab."""
     if not _secret("ODDS_API_KEY"):
@@ -523,7 +586,7 @@ def render_best_picks() -> None:
         return
     best_picks.render(st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
                       evaluate=_bp_evaluate, keep_keys=BP_KEEP_KEYS, after_scan=cloud_store.flush, star=_bp_star,
-                      credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info)
+                      credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info, open_pick=_bp_open)
 
 
 def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
@@ -620,7 +683,9 @@ def render_live_panel() -> None:
             if ss.get("pin_stat") and "ANYTIME" not in str(ss.get("pin_stat")).upper():
                 shown_pos = pin_check.table(shown_pos, ss.get("pin_summary"))
                 st.caption("Pin columns: Pinnacle's line, its no-vig Over %, and what a DraftKings Over / Under is worth if Pinnacle's price is right (same line only; — = Pinnacle has no price).")
-            st.dataframe(style_tags(shown_pos) if "Six-Point" in shown_pos else shown_pos, use_container_width=True)
+            shared_ui.clickable_table(st, style_tags(shown_pos) if "Six-Point" in shown_pos else shown_pos,
+                                      shown_pos[["Player", "Line", "Over", "Under"]].reset_index(drop=True), _open_board_row, "board_table",
+                                      "👆 Click a row (the box at its left edge) to evaluate that player below.", use_container_width=True)
             shared_ui.render_favorites(st, _fav_snaps(), _fav_save, stat=ss.get("board_stat") or live_stat,
                                        title=f"⭐ Favorite {ss.get('board_stat') or live_stat} props (scan the board first to list every player)")
             st.caption(LEGEND)
@@ -1061,8 +1126,9 @@ def render_snapshots() -> None:
         view = snaps[snaps["SHOWN_RESULT"] == "Miss"]
     cols = ["SEASON", "WEEK", "PLAYER", "STAT", "LINE", "SHOWN_SIDE", "TIER_SHOWN", "SIX_OVER", "SIX_UNDER", "MU", "ACTUAL", "Z",
             "VOL_EXP", "VOL_ACT", "SHOWN_RESULT", "WHY", "P_OVER", "P_UNDER", "FAILED_OVER", "FAILED_UNDER", "OPPONENT", "SOURCE", "TS_ET"]
-    st.dataframe(view.sort_values(["SEASON", "WEEK", "PLAYER"], ascending=[False, False, True])[cols].round(2),
-                 use_container_width=True, hide_index=True)
+    ordered = view.sort_values(["SEASON", "WEEK", "PLAYER"], ascending=[False, False, True]).reset_index(drop=True)
+    shared_ui.clickable_table(st, ordered[cols].round(2), ordered, _open_snapshot_row, "snap_table", shared_ui.CLICK_HINT,
+                              use_container_width=True, hide_index=True)
     st.caption("WHY is a heuristic: volume (attempts or receptions) 25% or more off his normal is a usage miss; a result more than 1 sd "
                "(his last-10 spread) against the pick is an outlier; otherwise normal variance. Z = (actual - projection) / sd. "
                "A player with no stats for a week that later weeks logged is voided (did not play).")
@@ -1295,6 +1361,7 @@ def main() -> None:
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", ""),
                          ("adj_vegas", True)):
         ss.setdefault(key, default)
+    _apply_open_request()
 
     if ss.get("snap_missing"):
         st.warning("nfl_snapshots.py is not uploaded to the app's GitHub repo, so predictions are NOT being saved. Upload it (it is in the zip).")
@@ -1363,7 +1430,7 @@ def main() -> None:
     with tab_parlay:
         if "snapshots" not in ss:
             ss["snapshots"] = load_snapshots()
-        shared_ui.render_parlay(st, ss["snapshots"], _fav_save)
+        shared_ui.render_parlay(st, ss["snapshots"], _fav_save, _open_snapshot_row)
     with tab_bt:
         render_matchup_backtest()
         render_vegas_backtest()
