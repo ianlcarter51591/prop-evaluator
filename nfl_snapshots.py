@@ -35,10 +35,11 @@ VOLUME_COL: Dict[str, Optional[str]] = {
 }
 TEXT_COLS: List[str] = ["SNAP_ID", "TS_ET", "GAMEDAY", "GAME_KEY", "GAME", "PLAYER", "TEAM", "POS", "STAT", "OPPONENT", "SOURCE",
                         "SHOWN_SIDE", "EV_SIDE", "TIER_SHOWN", "FAILED_OVER", "FAILED_UNDER", "STATUS", "SHOWN_RESULT",
-                        "EV_RESULT", "WHY", "OVER_LINK", "UNDER_LINK", "PIN_FLAG", "FAV"]
+                        "EV_RESULT", "WHY", "OVER_LINK", "UNDER_LINK", "PIN_FLAG", "FAV", "CLOSE_TS"]
 NUM_COLS: List[str] = ["SEASON", "WEEK", "LAST_WEEK_SEEN", "LINE", "OVER_ODDS", "UNDER_ODDS", "MU", "PROJ_MEAN", "RAW_AVG",
                        "MATCHUP_MULT", "USAGE_MULT", "ENV_MULT", "P_OVER", "P_UNDER", "PM_OVER", "PM_UNDER", "SIX_OVER", "SIX_UNDER", "RECENT_SD", "ACTUAL",
-                       "STAT_ERR", "Z", "VOL_EXP", "VOL_ACT", "VOL_ERR_PCT", "PIN_LINE", "PIN_P_SIDE", "DK_P_SIDE", "PIN_EV"]
+                       "STAT_ERR", "Z", "VOL_EXP", "VOL_ACT", "VOL_ERR_PCT", "PIN_LINE", "PIN_P_SIDE", "DK_P_SIDE", "PIN_EV",
+                       "CLOSE_LINE", "CLOSE_OVER", "CLOSE_UNDER", "CLOSE_MIN"]
 COLS: List[str] = TEXT_COLS + NUM_COLS
 
 
