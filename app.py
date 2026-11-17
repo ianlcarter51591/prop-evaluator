@@ -579,12 +579,29 @@ def _bp_open(row: Mapping[str, Any]) -> str:
     return _bp_open_note(row, r)
 
 
+def _call_supported(fn: Any, what: str, **kwargs: Any) -> Any:
+    """Call `fn` with only the keyword options it accepts. If an older copy of a helper file is in the repo, the app keeps working
+    and says which file to re-upload instead of crashing."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(**kwargs)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return fn(**kwargs)
+    dropped = sorted(k for k in kwargs if k not in params)
+    if dropped:
+        st.warning(f"{what} in your GitHub repo is an older version than app.py, so these features are off: {', '.join(dropped)}. "
+                   f"Upload the new {what} and reboot.")
+    return fn(**{k: v for k, v in kwargs.items() if k in params})
+
+
 def render_best_picks() -> None:
     """🏆 Best Picks tab."""
     if not _secret("ODDS_API_KEY"):
         st.warning("Please configure `ODDS_API_KEY` in Streamlit Secrets.")
         return
-    best_picks.render(st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
+    _call_supported(best_picks.render, "best_picks.py", st=st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
                       evaluate=_bp_evaluate, keep_keys=BP_KEEP_KEYS, after_scan=cloud_store.flush, star=_bp_star,
                       credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info, open_pick=_bp_open)
 
