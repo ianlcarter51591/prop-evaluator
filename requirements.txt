@@ -1,7 +1,7 @@
 streamlit
-numpy
 pandas
-plotly
+numpy
 requests
+plotly
 nflreadpy
 pyarrow
