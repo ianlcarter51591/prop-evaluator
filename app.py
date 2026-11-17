@@ -46,6 +46,9 @@ import nfl_bet_log as bl
 import nfl_snapshots as snaps_mod
 import pin_check
 import best_picks
+import prop_review
+
+DATE_COL_CLV = "GAMEDAY"
 import nfl_vegas
 import shared_ui
 import live_game
@@ -336,6 +339,27 @@ def links_for(name: str, stat_label: str, line: float) -> Tuple[str, str]:
         return ("", "")
 
 
+def _record_close(summary: pd.DataFrame, stat: str, game_date: str, commence: str, cached_age: Optional[float]) -> None:
+    """Use a freshly pulled DraftKings board as the latest 'close' of matching saved props (see prop_review.py). Never breaks the screen."""
+    try:
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo as _Z
+        seen = (datetime.now(_Z("America/New_York")) - timedelta(seconds=float(cached_age or 0))).strftime("%Y-%m-%d %H:%M")
+        new, n = prop_review.record_close(_fav_snaps(), summary, stat, str(game_date), str(commence), seen, DATE_COL_CLV)
+        if n:
+            st.session_state["snapshots"] = save_snapshots(new, force=False)
+    except Exception:
+        pass
+
+
+def _blend_info() -> Dict[str, Any]:
+    """Market-blend weight fitted from the graded snapshots (see prop_review.py)."""
+    try:
+        return prop_review.fit_blend(_fav_snaps())
+    except Exception:
+        return prop_review.fit_blend(None)      # never let the blend break the screen: fall back to the starting assumption
+
+
 def _fav_save(df: pd.DataFrame) -> pd.DataFrame:
     """Save snapshots after a star change (used by the favorite controls)."""
     return save_snapshots(df, force=True)
@@ -465,7 +489,7 @@ def _bp_fetch_board(game: Any, stat: str) -> pd.DataFrame:
         return board_, remaining_
 
     try:
-        (board, _), _age = odds_credits.fetch_cached(("NFL", ev_id, stat, True), fresh, lambda v: not v[0].empty)
+        (board, _), age = odds_credits.fetch_cached(("NFL", ev_id, stat, True), fresh, lambda v: not v[0].empty)
     except OddsApiError as exc:
         raise RuntimeError(odds_credits.friendly_error(exc))
     dk, pin_board = pin_check.split(board, "Bookmaker")
@@ -473,6 +497,8 @@ def _bp_fetch_board(game: Any, stat: str) -> pd.DataFrame:
     ss["board_game_label"] = str(game["label"])
     summary = summarize_board(dk) if not dk.empty else pd.DataFrame()
     remember_links(summary, stat)
+    if not summary.empty:
+        _record_close(summary, stat, str(game.get("day", "")), str(game.get("commence_time", "")), age)
     return summary
 
 
@@ -497,7 +523,7 @@ def render_best_picks() -> None:
         return
     best_picks.render(st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
                       evaluate=_bp_evaluate, keep_keys=BP_KEEP_KEYS, after_scan=cloud_store.flush, star=_bp_star,
-                      credits_note=lambda: odds_credits.credits_status()[0] or "")
+                      credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info)
 
 
 def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
@@ -566,6 +592,8 @@ def render_live_panel() -> None:
                     ss["pin_summary"] = summarize_board(pin_board) if use_pin and not pin_board.empty else pd.DataFrame()
                     ss["pin_stat"] = live_stat if use_pin else ""
                     ss["board"], ss["board_scan"], ss["board_token"] = board, None, uuid.uuid4().hex
+                    _commence = str(events.loc[game_idx].get("commence_time", ""))
+                    _record_close(summarize_board(board), live_stat, label_gameday(str(events.loc[game_idx, "label"])) or "", _commence, cached_age)
                     ss["board_game_label"] = str(events.loc[game_idx, "label"])
                     ss["board_stat"] = live_stat
                 except OddsApiError as exc:
@@ -966,6 +994,19 @@ def render_snapshots() -> None:
     snaps = ss["snapshots"]
     st.caption("Saved automatically each time you press Evaluate or scan a board (latest snapshot per player, stat, line and game).")
     shared_ui.render_storage_status(st)
+
+    def _auto_grade() -> pd.DataFrame:
+        from sports_data import fetch_nfl_player_logs
+        graded, _n, notes = sn.grade(ss["snapshots"], fetch_nfl_player_logs)
+        ss["snapshots"] = save_snapshots(graded)
+        ss["snap_notes"] = notes[:5]
+        return ss["snapshots"]
+
+    try:
+        prop_review.render_daily(st, snaps, "GAMEDAY", _now_et_text()[:10], _auto_grade)
+    except Exception as e:
+        st.caption(f"Daily results unavailable ({str(e)[:80]}).")
+    snaps = ss["snapshots"]
     a, b = st.columns(2)
     if a.button("🏁 Grade finished games", key="grade_snaps"):
         from sports_data import fetch_nfl_player_logs
@@ -997,6 +1038,14 @@ def render_snapshots() -> None:
     if not pins.empty:
         st.markdown("**Graded results by Pinnacle cross-check** (does agreeing with Pinnacle predict winning? Wait for 100+ graded picks before trusting this.)")
         st.dataframe(pins.round(1), use_container_width=True, hide_index=True)
+    try:
+        prop_review.render_calibration(st, snaps)
+    except Exception as e:
+        st.caption(f"Calibration report unavailable ({str(e)[:80]}).")
+    try:
+        prop_review.render_clv(st, snaps, DATE_COL_CLV, _now_et_text()[:10])
+    except Exception as e:
+        st.caption(f"Closing-line report unavailable ({str(e)[:80]}).")
     if not tiers.empty:
         st.markdown("**Graded results by tier shown**")
         st.dataframe(tiers.round(1), use_container_width=True, hide_index=True)
@@ -1287,6 +1336,7 @@ def main() -> None:
                 st.error(res["error"])
             else:
                 render_pin_panel(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
+                prop_review.render_blend_banner(st, res, _blend_info())
                 render_results(res, ss["last_ctx"]["stat"], ss["last_ctx"]["line"])
 
         with st.expander("ℹ️ How the model works"):
