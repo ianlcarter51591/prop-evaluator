@@ -1012,8 +1012,9 @@ def render_results(res: Dict[str, Any], stat_category: str, line_val: float) -> 
     try:
         info_ = assessment_summary(res)
         ctx_ = st.session_state.get("last_ctx") or {}
-        shared_ui.render_place_bet(st, res["player_name"], stat_category, float(line_val), {"Over": ctx_.get("over"), "Under": ctx_.get("under")},
-                                   links_for(res["player_name"], stat_category, line_val), info_["best"]["side"] if info_ else "")
+        _call_supported(shared_ui.render_place_bet, "shared_ui.py", st=st, player=res["player_name"], stat=stat_category, line=float(line_val),
+                        odds={"Over": ctx_.get("over"), "Under": ctx_.get("under")}, links=links_for(res["player_name"], stat_category, line_val),
+                        best_side=info_["best"]["side"] if info_ else "", snaps=_fav_snaps(), save=_fav_save)
     except Exception:
         pass       # the bet buttons are a convenience: never break the result screen
     try:
