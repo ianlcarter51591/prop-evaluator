@@ -454,6 +454,12 @@ def _run_evaluation(name: str, stat_category: str, line: float, over: float, und
     return res
 
 
+def _bp_tag(rows: pd.DataFrame) -> None:
+    """Save the Best Picks list just scanned (rank, side, ✓) on the props' snapshots, so Daily results can grade it."""
+    import favorites as fv
+    st.session_state["snapshots"] = _fav_save(fv.tag_best_picks(_fav_snaps(), rows))
+
+
 def _bp_star(rows: pd.DataFrame) -> int:
     """Favorite the given Best Picks rows (they were saved as snapshots by the scan); returns how many were starred."""
     import favorites as fv
@@ -603,7 +609,7 @@ def render_best_picks() -> None:
         return
     _call_supported(best_picks.render, "best_picks.py", st=st, stats=BP_STATS, default_stats=BP_DEFAULT_STATS, list_games=_bp_games, fetch_board=_bp_fetch_board,
                       evaluate=_bp_evaluate, keep_keys=BP_KEEP_KEYS, after_scan=cloud_store.flush, star=_bp_star,
-                      credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info, open_pick=_bp_open)
+                      credits_note=lambda: odds_credits.credits_status()[0] or "", blend_info=_blend_info, open_pick=_bp_open, tag=_bp_tag)
 
 
 def scan_board(summary: pd.DataFrame, stat_category: str, game_label: str, progress: Any = None) -> Dict[str, Any]:
