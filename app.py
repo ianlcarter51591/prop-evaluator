@@ -52,6 +52,10 @@ DATE_COL_CLV = "GAMEDAY"
 import nfl_vegas
 import shared_ui
 import live_game
+try:
+    import nfl_prior
+except ImportError:          # the startup check reports a missing file; the engine falls back to a fixed weight
+    nfl_prior = None
 
 st.set_page_config(
     page_title="NFL Prop Evaluator",
@@ -244,10 +248,28 @@ def _adj_cfg() -> Dict[str, Any]:
     split = lambda key: [x.strip() for x in str(ss[key]).split(",") if x.strip()]
     return {"injuries": ss["adj_inj"], "absorb_scale": float(ss["adj_absorb"]),
             "manual_out": split("adj_out"), "manual_q": split("adj_q"), "manual_in": split("adj_in"),
-            "vegas": bool(ss.get("adj_vegas", True)), "vegas_k": ss.get("vegas_k")}
+            "vegas": bool(ss.get("adj_vegas", True)), "vegas_k": ss.get("vegas_k"),
+            "per_stat_prior": bool(ss.get("adj_per_stat", True)), "n0_by_stat": ss.get("n0_by_stat"),
+            "role_auto": bool(ss.get("adj_role_auto", True)), "role_changed": split("adj_role") if "adj_role" in ss else []}
 
 
 SNAP_NAME, VEGAS_K_NAME = "nfl_snapshots.csv", "nfl_vegas_k.json"
+PRIOR_W_NAME = "nfl_prior_weights.json"
+
+
+def load_prior_weights() -> Optional[Dict[str, float]]:
+    """Per-stat last-season weights applied from the calibration (saved to the Gist, so they survive restarts)."""
+    try:
+        text = cloud_store.load_text(PRIOR_W_NAME, PRIOR_W_NAME)
+        data = json.loads(text) if text and text.strip() else None
+        return {str(k): float(v) for k, v in data.items()} if isinstance(data, dict) and data else None
+    except Exception:
+        return None
+
+
+def save_prior_weights(w: Optional[Dict[str, float]]) -> None:
+    """Persist (or clear) the per-stat last-season weights."""
+    cloud_store.save_text(PRIOR_W_NAME, json.dumps(w or {}), PRIOR_W_NAME, True)
 
 
 def _read_csv_text(text: Optional[str]) -> pd.DataFrame:
@@ -379,7 +401,7 @@ def pin_assessment(res: Dict[str, Any], stat_category: str, line: float, over: f
     if str(ss.get("pin_stat", "")).upper() != str(stat_category).upper() or "ANYTIME" in str(stat_category).upper():
         return {}
     side = (res.get("six_point") or {}).get("best") or res.get("best_side") or "Over"
-    return pin_check.for_player(ss.get("pin_summary"), str(res.get("player_name", "")), float(line), float(over), float(under), str(side))
+    return pin_check.for_player(ss.get("pin_summary"), str(res.get("player_name", "")), float(line), float(over), float(under), str(side), stat=stat_category)
 
 
 def render_pin_panel(res: Dict[str, Any], stat_category: str, line: float) -> None:
@@ -518,7 +540,8 @@ def _bp_evaluate(game: Any, stat: str, name: str, line: float, over: float, unde
     m = res.get("matchup") or {}
     row = best_picks.make_row(res, stat, line, label.split(" (")[0], m.get("pos") or position_of(name) or "", m.get("opponent"), m.get("rank"), m.get("n_teams"))
     if row:
-        row["PIN"] = pin_check.for_player(ss.get("pin_summary"), name, line, over, under, row["SIDE"])["FLAG"]
+        a = pin_check.for_player(ss.get("pin_summary"), name, line, over, under, row["SIDE"], stat=stat)
+        row.update(PIN=a["FLAG"], PIN_GAP=a.get("GAP_PP"), PIN_LINE=a.get("PIN_LINE"))
     return row
 
 
@@ -704,7 +727,7 @@ def render_live_panel() -> None:
             shown_pos = shown.copy()
             shown_pos.insert(1, "Pos", shown_pos["Player"].map(lambda n: position_of(n) or "—"))
             if ss.get("pin_stat") and "ANYTIME" not in str(ss.get("pin_stat")).upper():
-                shown_pos = pin_check.table(shown_pos, ss.get("pin_summary"))
+                shown_pos = pin_check.table(shown_pos, ss.get("pin_summary"), ss.get("pin_stat"))
                 st.caption("Pin columns: Pinnacle's line, its no-vig Over %, and what a DraftKings Over / Under is worth if Pinnacle's price is right (same line only; — = Pinnacle has no price).")
             shared_ui.clickable_table(st, style_tags(shown_pos) if "Six-Point" in shown_pos else shown_pos,
                                       shown_pos[["Player", "Line", "Over", "Under"]].reset_index(drop=True), _open_board_row, "board_table",
@@ -1359,6 +1382,49 @@ def render_matchup_backtest() -> None:
         st.code("DEFAULT_K = " + json.dumps({k: round(v, 3) for k, v in active.items()}, indent=4), language="python")
 
 
+def render_prior_calibration() -> None:
+    """Per-stat last-season weight: which weight best predicted each player's first 10 games of past seasons."""
+    ss = st.session_state
+    st.markdown("---")
+    st.markdown("### ⚖️ Last-season weight calibration")
+    if nfl_prior is None:
+        st.warning("nfl_prior.py is missing from the repo: upload it to use this.")
+        return
+    st.markdown("For each player's first 10 games of past seasons, finds the last-season weight (in pseudo-games) that predicted "
+                "the next game best, separately for each stat. Higher = lean on last season more.")
+    c1, c2 = st.columns(2)
+    n_seasons = c1.slider("Seasons to score", 1, 4, 3, key="pw_seasons")
+    c2.write("")
+    if c2.button("⚖️ Calibrate last-season weight", key="run_pw"):
+        cur = default_season()
+        with st.spinner("Loading nflverse seasons and scoring predictions…"):
+            try:
+                weekly = load_weekly(cur, back=n_seasons)
+                ss["pw_table"] = nfl_prior.estimate(weekly, cur - n_seasons + 1, current=ss.get("n0_by_stat"))
+            except Exception as e:
+                ss["pw_table"] = None
+                st.error(f"Calibration failed: {e}")
+    pw = ss.get("pw_table")
+    if pw is not None and not pw.empty:
+        st.dataframe(pw.round(4), use_container_width=True, hide_index=True)
+        st.caption("N0_BEST = best weight; N0_RANGE = every weight within 1% of the best (wide = the choice barely matters); "
+                   "GAIN_VS_CURRENT_% = how much better N0_BEST predicted than the weight in use now.")
+        a, b = st.columns(2)
+        if a.button("✅ Apply each stat's weight", key="apply_pw"):
+            ss["n0_by_stat"] = {str(r.STAT): float(r.N0_BEST) for r in pw.itertuples()}
+            save_prior_weights(ss["n0_by_stat"])
+            st.toast("Per-stat last-season weights applied and saved")
+        if b.button("↩️ Reset to 4 for every stat", key="reset_pw"):
+            ss["n0_by_stat"] = None
+            save_prior_weights(None)
+            st.toast("Back to the default weight")
+    elif pw is not None:
+        st.warning("Not enough player-seasons to score. Try more seasons.")
+    if ss.get("n0_by_stat"):
+        st.caption("Applied weights are saved to your Gist and reload on restart. Optional: paste this into nfl_prior.py to make them built-in:")
+        st.code("N_PRIOR_BY_STAT: Dict[str, float] = " + json.dumps(ss["n0_by_stat"]), language="python")
+
+
 def main() -> None:
     """Streamlit entry point."""
     st.markdown(
@@ -1377,13 +1443,15 @@ def main() -> None:
         ss["matchup_k"] = load_k_file()
     if "vegas_k" not in ss:
         ss["vegas_k"] = load_vegas_k()
+    if "n0_by_stat" not in ss:
+        ss["n0_by_stat"] = load_prior_weights()
     if "bet_log" not in ss:
         ss["bet_log"] = load_bet_log()
     ss.setdefault("editor_ver", 0)
     for key, default in (("input_player", def_player), ("input_stat", stat_options()[0]), ("input_line", float(def_line)),
                          ("input_over", -110), ("input_under", -110), ("input_opp", AUTO_OPP), ("input_source", SOURCES[0]),
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", ""),
-                         ("adj_vegas", True)):
+                         ("adj_vegas", True), ("adj_per_stat", True), ("adj_role_auto", True), ("adj_role", "")):
         ss.setdefault(key, default)
     _apply_open_request()
 
@@ -1403,6 +1471,17 @@ def main() -> None:
             st.text_input("Teammates ACTIVE (overrides a stale injury feed)", key="adj_in")
             st.caption("Applies when you press Evaluate. Check the team's report close to kickoff: the feed can lag.")
             st.checkbox("Use Vegas implied team points (total and spread) in the projection", key="adj_vegas")
+            st.markdown("**Last-season weight**")
+            st.checkbox("Use each stat's own calibrated weight", key="adj_per_stat",
+                        help="Set by the calibration in the Matchup Backtest tab. Untick to use 4 pseudo-games for every stat.")
+            if nfl_prior is not None:
+                active = {**nfl_prior.N_PRIOR_BY_STAT, **(ss.get("n0_by_stat") or {})}
+                st.caption(("Weights in use: " + ", ".join(f"{k.title()} {v:g}" for k, v in active.items()) + "; other stats "
+                            f"{nfl_prior.N_PRIOR:g}.") if active else
+                           f"Every stat uses {nfl_prior.N_PRIOR:g} pseudo-games until you calibrate (Matchup Backtest tab).")
+            st.checkbox("Detect role changes automatically (new team, or targets / carries / attempts moved 30%+)", key="adj_role_auto",
+                        help="When it fires, last season counts a quarter as much, because it describes a different job.")
+            st.text_input("Role changed (comma-separated players: new starter, depth-chart change, returning from injury)", key="adj_role")
         with st.form("evaluation_form"):
             c1, c2, c3 = st.columns([2, 1, 1])
             player_name = c1.text_input("Player Name", key="input_player")
@@ -1457,6 +1536,7 @@ def main() -> None:
         shared_ui.render_parlay(st, ss["snapshots"], _fav_save, _open_snapshot_row)
     with tab_bt:
         render_matchup_backtest()
+        render_prior_calibration()
         render_vegas_backtest()
 
 
