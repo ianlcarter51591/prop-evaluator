@@ -10,6 +10,10 @@ import pandas as pd
 from nfl_matchups import DEFAULT_K, matchup_multiplier, matchup_table
 from nfl_adjust import injury_layer, tier_splits
 from nfl_six_point import assess as six_point_assess
+try:
+    import nfl_prior
+except ImportError:                       # older repo without nfl_prior.py: fixed weight, no role override
+    nfl_prior = None
 from sports_data import current_nfl_season, fetch_nfl_player_logs, load_schedule, load_weekly, next_game
 
 SOURCES: Tuple[str, ...] = ("Model (EWMA mean)", "My mean", "My median")
@@ -63,6 +67,11 @@ class Projection:
     mult: float
 
 
+def nfl_prior_clean(name: str) -> str:
+    """Lower-case letters only, for matching names typed in the 'Role changed' box."""
+    return "".join(ch for ch in str(name).lower() if ch.isalpha())
+
+
 def ewma_weights(n: int, decay: float = DECAY) -> np.ndarray:
     """Normalized weights for n games ordered oldest -> newest (newest heaviest)."""
     w = decay ** np.arange(n)[::-1]
@@ -76,13 +85,15 @@ def _cv(x: np.ndarray) -> Optional[float]:
     return float(np.std(x, ddof=1) / np.mean(x))
 
 
-def build_projection(cur_x: np.ndarray, pri_x: np.ndarray, stat: str, mult: float = 1.0) -> Projection:
+def build_projection(cur_x: np.ndarray, pri_x: np.ndarray, stat: str, mult: float = 1.0, n_prior: Optional[float] = None) -> Projection:
     """
     mu    = [ (n*EWMA_cur + n0*mean_prior) / (n + n0) ] * matchup_mult
     sigma = max(pooled CV, 0.6*default CV) * mu * sqrt(1 + 1/(n + n0)),
             pooled CV = weighted mean of current CV (weight n), prior CV (weight n0) and the stat's default CV.
     """
-    n, n0 = len(cur_x), (N_PRIOR if len(pri_x) > 0 else 0.0)
+    n, n0 = len(cur_x), ((N_PRIOR if n_prior is None else float(n_prior)) if len(pri_x) > 0 else 0.0)
+    if n == 0 and len(pri_x) > 0:
+        n0 = max(n0, 1.0)                 # nothing but last season to go on
     if n + n0 == 0:
         raise ValueError("No usable games (current or prior season).")
     parts: List[Tuple[float, float]] = []
@@ -216,6 +227,19 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             warnings.append(f"Matchup data unavailable ({e}); no adjustment applied.")
         mult = matchup["mult"] if matchup else 1.0
 
+        # Last-season weight for this stat, cut when his role changed (new team, or volume moved a lot).
+        n0_used, role_info, role_msg = N_PRIOR, None, ""
+        if nfl_prior is not None:
+            cfg0 = adj_cfg or {}
+            n0_base = nfl_prior.prior_weight(stat, cfg0)
+            manual = nfl_prior_clean(player_name) in {nfl_prior_clean(x) for x in cfg0.get("role_changed", [])}
+            shift = nfl_prior.role_shift(logs, stat) if cfg0.get("role_auto", True) else None
+            n0_used = nfl_prior.apply_role(n0_base, shift, manual)
+            role_msg = nfl_prior.role_note(player_name, shift, manual, n0_base, n0_used)
+            if role_msg:
+                role_info = {"auto": shift, "manual": manual, "n0": n0_used}
+                warnings.insert(0, role_msg)
+
         # Injury / opportunity redistribution (teammates out or returning) and defense-tier splits.
         pid = str(logs["PID"].iloc[-1])
         inj: Optional[Dict[str, Any]] = None
@@ -227,7 +251,7 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
                 warnings.append(f"Defense-tier splits unavailable ({e}).")
             if adj_cfg and adj_cfg.get("injuries"):
                 try:
-                    inj = injury_layer(player_name, pid, team, stat, weekly, season, adj_cfg)
+                    inj = injury_layer(player_name, pid, team, stat, weekly, season, {**adj_cfg, "n0": n0_used})
                     warnings.extend(inj["notes"])
                 except Exception as e:
                     warnings.append(f"Injury adjustment unavailable ({e}); none applied.")
@@ -245,7 +269,7 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
         env_mult = env["mult"] if env else 1.0
         total_mult = mult * usage_mult * env_mult
 
-        proj = build_projection(cur[stat].to_numpy(float), pri[stat].to_numpy(float), stat, total_mult)
+        proj = build_projection(cur[stat].to_numpy(float), pri[stat].to_numpy(float), stat, total_mult, n0_used)
         recent = logs.tail(10)
         vals = recent[stat].to_numpy(float)
         mu = proj.mu
@@ -278,6 +302,7 @@ def evaluate_prop(player_name: str, stat_category: str, line: float, over_odds: 
             "raw_avg": float(np.mean(vals)) if len(vals) else 0.0, "mu": proj.mu,
             "hit10": int(np.sum(vals > line)), "n10": len(vals), "hit5": int(np.sum(vals[-5:] > line)), "n5": len(vals[-5:]),
             "n_current": proj.n_current, "n_prior": proj.n_prior, "matchup": matchup, "warnings": warnings,
+            "prior_weight": n0_used, "role_shift": role_info,
             # Legacy aliases so an older app.py that reads the previous result keys keeps working.
             "projection_mean": float(np.mean(sims)), "projection_median": float(np.median(sims)), "edge_vs_market": (p_cond - dv_side) * 100.0,
             "adj_proj": proj.mu, "adjusted_projection": proj.mu, "matchup_mult": mult,
