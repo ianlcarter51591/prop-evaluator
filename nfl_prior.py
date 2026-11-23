@@ -14,6 +14,13 @@ PRIOR_GRID: List[float] = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32]
 EARLY_WEEKS = 10                 # score predictions over each player's first 10 games of a season
 WINDOW, DECAY = 8, 0.85          # match the engine's EWMA
 MIN_PRIOR_GAMES = 4              # a player-season needs 4+ games last season to be scored
+# ... and a last-season average big enough that books would post a line. Without this, backups and trick-play passers with
+# tiny averages (a WR's 2 passing yards a game) dominate the error, which is measured relative to last season's average.
+MIN_PRIOR_MEAN: Dict[str, float] = {
+    "PASSING YARDS": 120.0, "PASS COMPLETIONS": 10.0, "PASS ATTEMPTS": 15.0, "PASSING TDS": 0.5, "INTERCEPTIONS": 0.3,
+    "RUSHING YARDS": 20.0, "RUSHING ATTEMPTS": 5.0, "RECEIVING YARDS": 20.0, "RECEPTIONS": 2.0,
+    "KICKING POINTS": 4.0, "FIELD GOALS MADE": 0.8, "ANYTIME TOUCHDOWN SCORER": 0.15,
+}
 CALIBRATE_STATS: Tuple[str, ...] = ("PASSING YARDS", "PASS COMPLETIONS", "PASS ATTEMPTS", "PASSING TDS", "RUSHING YARDS",
                                     "RUSHING ATTEMPTS", "RECEIVING YARDS", "RECEPTIONS", "INTERCEPTIONS",
                                     "KICKING POINTS", "FIELD GOALS MADE", "ANYTIME TOUCHDOWN SCORER")
@@ -91,7 +98,7 @@ def _season_arrays(weekly: pd.DataFrame, stat: str, first_season: int) -> Option
     g = d.groupby(["PID", "SEASON"])[stat]
     prior = pd.DataFrame({"PRI": g.mean(), "NP": g.size()}).reset_index()
     prior["SEASON"] += 1
-    prior = prior[(prior["NP"] >= MIN_PRIOR_GAMES) & (prior["PRI"] > 0)]
+    prior = prior[(prior["NP"] >= MIN_PRIOR_GAMES) & (prior["PRI"] > 0) & (prior["PRI"] >= MIN_PRIOR_MEAN.get(stat, 0.0))]
     cur = d[d["SEASON"] >= first_season].copy()
     cur["G"] = cur.groupby(["PID", "SEASON"]).cumcount()
     cur = cur[cur["G"] < EARLY_WEEKS].merge(prior, on=["PID", "SEASON"], how="inner")
