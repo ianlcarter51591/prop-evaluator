@@ -174,7 +174,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
         inferred = (streak >= 3) & ~listed
         q = np.where(inferred, 0.75, q)
         out["notes"].append("Injury feed unavailable: teammates who missed the last 3+ games are counted 75% likely out. Add names in the injury settings to override.")
-    f = f_core * n / (n + N_PRIOR)
+    f = f_core * n / max(n + float(cfg.get("n0", N_PRIOR)), 1e-9)
     i = pids.index(pid) if pid in pids else -1
     if i >= 0 and q[i] > 0:
         out["notes"].append(f"ESPN lists {player_name} as {status[i] or 'injured'}; the projection assumes he plays.")
@@ -206,7 +206,7 @@ def injury_layer(player_name: str, pid: str, team: str, stat: str, weekly: pd.Da
             if qq > 0:
                 out["qb_flag"] = "QB1 OUT" if qq >= 0.99 else f"QB1 {qq:.0%} to miss"
             qb_games = set(win.loc[win["PID"] == qb, "GKEY"])
-            qf = float(sum(wi for g, wi in zip(gk, wts) if g not in qb_games) * n / (n + N_PRIOR)) if n else 0.0
+            qf = float(sum(wi for g, wi in zip(gk, wts) if g not in qb_games) * n / max(n + float(cfg.get("n0", N_PRIOR)), 1e-9)) if n else 0.0
             pen = beta * (qq - qf)
             mult -= pen
             if abs(pen) > 0.005:
