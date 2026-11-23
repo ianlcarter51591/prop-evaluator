@@ -383,7 +383,7 @@ def render_clv(st: Any, snaps: Optional[pd.DataFrame], date_col: str = "GAME_DAT
 # ====================================================================================================
 
 BREAK_EVEN = 100.0 * 110.0 / 210.0
-FILTERS = ["All props", "Favorites", "SHARP and LEAN", "SHARP only", "Best Picks 5/6+ & matchup", "Best Picks 5/6+ & matchup, +EV", "Best Picks 5/6+ & matchup, negative EV", "Best Picks top 10", "Best Picks ✓ BOTH", "Placed bets", "Placed parlay legs"]
+FILTERS = ["All props", "Favorites", "SHARP and LEAN", "SHARP only", "Best Picks 5/6+ & matchup", "Best Picks 5/6+ & matchup, +EV", "Best Picks 5/6+ & matchup, negative EV", "Pinnacle agrees, gap up to 3.5", "Pinnacle agrees, gap over 3.5", "Best Picks: Pinnacle agrees", "Best Picks: Pinnacle line differs", "Best Picks top 10", "Best Picks ✓ BOTH", "Placed bets", "Placed parlay legs"]
 
 
 def _regrade(p: pd.DataFrame, side: pd.Series, price: Any) -> pd.DataFrame:
@@ -397,6 +397,22 @@ def _regrade(p: pd.DataFrame, side: pd.Series, price: Any) -> pd.DataFrame:
     p["SHOWN_SIDE"] = np.where(over, "Over", "Under")
     p["OVER_ODDS"], p["UNDER_ODDS"] = price, price
     return p
+
+
+def as_pinnacle_picks(d: pd.DataFrame, gap: bool) -> pd.DataFrame:
+    """Best Picks 'Pinnacle agrees' props (graded on the side ranked, BP_SIDE) or 'Pinnacle line differs' props (graded on the side
+    Pinnacle's line favors, BP_GAPSIDE), each at that side's saved DraftKings price."""
+    col = "BP_GAPSIDE" if gap else "BP_PIN"
+    if col not in d.columns:
+        return d.iloc[0:0]
+    flag = d[col].fillna("").astype(str)
+    p = d[flag != ""] if gap else d[flag == "Y"]
+    if p.empty:
+        return p
+    side = p["BP_GAPSIDE"] if gap else p["BP_SIDE"]
+    over = side.astype(str).str.lower().isin(["over", "yes"])
+    price = np.where(over, pd.to_numeric(p["OVER_ODDS"], errors="coerce"), pd.to_numeric(p["UNDER_ODDS"], errors="coerce"))
+    return _regrade(p, side, price)
 
 
 def as_best_picks(d: pd.DataFrame, both_only: bool, top: int = 10, sharp_only: bool = False, ev: str = "") -> pd.DataFrame:
@@ -438,6 +454,16 @@ def _filter_picks(d: pd.DataFrame, how: str) -> pd.DataFrame:
         return as_best_picks(d, False, sharp_only=True, ev="+")
     if how == "Best Picks 5/6+ & matchup, negative EV":
         return as_best_picks(d, False, sharp_only=True, ev="-")
+    if how in ("Pinnacle agrees, gap up to 3.5", "Pinnacle agrees, gap over 3.5"):
+        if not {"PIN_FLAG", "PIN_P_SIDE", "DK_P_SIDE"} <= set(d.columns):
+            return d.iloc[0:0]
+        gap = (pd.to_numeric(d["PIN_P_SIDE"], errors="coerce") - pd.to_numeric(d["DK_P_SIDE"], errors="coerce")).abs()
+        agree = d["PIN_FLAG"].fillna("").astype(str) == "Agrees"
+        return d[agree & (gap > 3.5 if how.endswith("over 3.5") else gap <= 3.5)]
+    if how == "Best Picks: Pinnacle agrees":
+        return as_pinnacle_picks(d, False)
+    if how == "Best Picks: Pinnacle line differs":
+        return as_pinnacle_picks(d, True)
     if how == "Best Picks top 10":
         return as_best_picks(d, False)
     if how == "Best Picks ✓ BOTH":
@@ -599,6 +625,14 @@ def render_daily(st: Any, snaps: Optional[pd.DataFrame], date_col: str, today: s
                                                          "graded on that side, 1 unit each at the saved price.",
                        "Best Picks 5/6+ & matchup, negative EV": "The 5/6 and 6/6 matchup picks hidden for negative EV: if these lose money, hiding "
                                                                  "them is right; if they win, the EV numbers are off.",
+                       "Pinnacle agrees, gap up to 3.5": "Every prop where Pinnacle agreed with the side the app showed by 3.5 points or "
+                                                         "less, graded on that side, 1 unit each at the saved DraftKings price.",
+                       "Pinnacle agrees, gap over 3.5": "The big-gap Pinnacle-agrees props Best Picks hides by default. If these keep losing, "
+                                                        "hiding them is right.",
+                       "Best Picks: Pinnacle agrees": "Props where Pinnacle rated the ranked side more likely than DraftKings in the last Best Picks "
+                                                      "scan before the games, 1 unit each at the saved DraftKings price.",
+                       "Best Picks: Pinnacle line differs": "Props whose Pinnacle line was half a point or more from DraftKings', graded on the side "
+                                                            "Pinnacle's line favored, 1 unit each at that side's saved DraftKings price.",
                        "Best Picks top 10": "The top 10 of the last Best Picks scan before the games, graded on the side it ranked, 1 unit each at "
                                             "the saved DraftKings price.",
                        "Best Picks ✓ BOTH": "Every ✓ BOTH pick of the last Best Picks scan before the games (still +EV and a top-third matchup), "
