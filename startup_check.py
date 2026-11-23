@@ -17,6 +17,7 @@ REQUIRED: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("odds_credits", ("record", "record_headers", "fetch_cached", "credits_status", "friendly_error", "cache_note")),
     ("six_point_core", ("SportSpec", "choose_best", "assemble", "tag_text", "add_six_point_column", "style_tags", "find_espn_spread", "spread_from_espn_odds")),
     ("nfl_six_point", ("assess", "add_six_point_column", "style_tags", "game_matches", "opponent_from_label", "label_gameday")),
+    ("nfl_prior", ("prior_weight", "role_shift", "apply_role", "role_note", "estimate")),
     ("multi_sport_engine", ("DEFAULTS", "SOURCES", "default_season", "evaluate_prop", "stat_options")),
     ("odds_api_client", ("MARKETS", "OddsApiError", "fetch_prop_board", "list_events", "player_offers", "summarize_board")),
     ("live_game", ("scoreboard", "headshot_url", "evaluate_live")),
