@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1425,6 +1425,29 @@ def render_prior_calibration() -> None:
         st.code("N_PRIOR_BY_STAT: Dict[str, float] = " + json.dumps(ss["n0_by_stat"]), language="python")
 
 
+# Recommended model settings: applied at the start of every session, and restorable with one tap if a box or slider was
+# changed by accident (easy on a phone while scrolling).
+RECOMMENDED_SETTINGS: Dict[str, Any] = {"adj_inj": True, "adj_absorb": 1.0, "adj_vegas": True, "adj_per_stat": True, "adj_role_auto": True}
+SETTING_LABELS: Dict[str, str] = {"adj_inj": "Injured / returning teammates", "adj_absorb": "Absorption strength",
+                                  "adj_vegas": "Vegas implied team points", "adj_per_stat": "Per-stat calibrated weights",
+                                  "adj_role_auto": "Detect role changes"}
+
+
+def restore_settings() -> None:
+    """Put every model setting back to RECOMMENDED_SETTINGS (a button callback: runs before the widgets are drawn)."""
+    st.session_state.update(RECOMMENDED_SETTINGS)
+
+
+def settings_off(ss: Mapping[str, Any]) -> List[str]:
+    """Plain-English list of settings that differ from the recommended ones."""
+    def fmt(v: Any) -> str:
+        return ("on" if v else "off") if isinstance(v, bool) else f"{v:g}"
+    def same(a: Any, b: Any) -> bool:
+        return a == b if isinstance(b, bool) else abs(float(a or 0) - float(b)) < 1e-9
+    return [f"{SETTING_LABELS[k]}: {fmt(ss.get(k))} (recommended {fmt(v)})" for k, v in RECOMMENDED_SETTINGS.items()
+            if k in ss and not same(ss.get(k), v)]
+
+
 def main() -> None:
     """Streamlit entry point."""
     st.markdown(
@@ -1453,6 +1476,9 @@ def main() -> None:
                          ("adj_inj", True), ("adj_absorb", 1.0), ("adj_out", ""), ("adj_q", ""), ("adj_in", ""),
                          ("adj_vegas", True), ("adj_per_stat", True), ("adj_role_auto", True), ("adj_role", "")):
         ss.setdefault(key, default)
+    if not ss.get("settings_ready"):                 # new session: every model setting starts at the recommended value
+        restore_settings()
+        ss["settings_ready"] = True
     _apply_open_request()
 
     if ss.get("snap_missing"):
@@ -1461,6 +1487,10 @@ def main() -> None:
     with tab_best:
         render_best_picks()
     with tab_eval:
+        off = settings_off(ss)
+        if off:
+            st.warning("⚠️ Model settings differ from the recommended ones: " + "; ".join(off) + ".")
+            st.button("↩️ Restore recommended settings", key="restore_settings", on_click=restore_settings)
         render_live_scoreboard()
         render_live_panel()
         with st.expander("🩺 Injuries & usage settings", expanded=False):
