@@ -541,7 +541,7 @@ def _bp_evaluate(game: Any, stat: str, name: str, line: float, over: float, unde
     row = best_picks.make_row(res, stat, line, label.split(" (")[0], m.get("pos") or position_of(name) or "", m.get("opponent"), m.get("rank"), m.get("n_teams"))
     if row:
         a = pin_check.for_player(ss.get("pin_summary"), name, line, over, under, row["SIDE"], stat=stat)
-        row.update(PIN=a["FLAG"], PIN_GAP=a.get("GAP_PP"), PIN_LINE=a.get("PIN_LINE"))
+        row.update(PIN=a["FLAG"], PIN_GAP=a.get("GAP_PP"), PIN_LINE=a.get("PIN_LINE"), PIN_EV=a.get("PIN_EV"))
     return row
 
 
